@@ -34,59 +34,73 @@ std::map<std::string, std::string> parse_attributes(const std::sub_match<Char> &
 {
   static const std::regex attribute(R"(\s+(\S+)\s*=\s*('|")(.*?)\2)");
   std::map<std::string, std::string> retval;
-  using regex_iterator = std::regex_iterator<Char>;
 
+  std::transform(
+      std::regex_iterator(chars.first, chars.second, attribute),
+      std::regex_iterator<Char>{},
+      std::inserter(retval, retval.end()),
+      [](const auto &match){ return std::pair{match.str(1), match.str(3)}; }
+      );
 
-  for (auto match = regex_iterator(chars.first, chars.second, attribute);
-       match != decltype(match)();
-       ++match)
-  {
-    retval.emplace(match->str(1), match->str(3));
-  }
- 
   return retval;
 }
 
+
 void parse(std::string_view chars, DOMObject &parent)
 {
-  enum class match_type { tag, empty_tag, cdata, whitespace };
-
-  static const std::pair<match_type, std::regex> regexes[] = {
-    std::pair{match_type::tag,        std::regex{R"(^<(\S+)(\s.*?)?>((.|\s)*?)<\/\1>)"}},
-    std::pair{match_type::empty_tag,  std::regex{R"(^<(\S+)(\s.*?)?\/>)"}},
-    std::pair{match_type::cdata,      std::regex{R"(^[^<]+)"}},
-    std::pair{match_type::whitespace, std::regex{R"(^\s+)"}}
-  };
-
-  const auto find_match = [](const auto &regex, auto &chars){
-    std::pair<bool, std::cmatch> results;
-    results.first = std::regex_search(chars.begin(), chars.end(), results.second, regex);
-    chars.remove_prefix(results.second.length(0));
-    return results;
-  };
-
-  while (!chars.empty()) {
-    for(const auto regex : regexes) {
-      if (const auto [found, match] = find_match(regex.second, chars); found)
-      {
-        dump_match(match);
-        switch (regex.first) {
-          case match_type::tag:
-            parse(
-                std::string_view(match[3].first, match[3].length()),
-                std::get<DOMObject>(parent.children.emplace_back(DOMObject(match.str(1), parse_attributes(match[2]))))
-                );
-            break;
-          case match_type::empty_tag:
-            parent.children.emplace_back(DOMObject(match.str(1), parse_attributes(match[2])));
-            break;
-          case match_type::cdata:
-            parent.children.emplace_back(match.str(0));
-          case match_type::whitespace:
-            break;
-        }
+  static const auto regexes = std::tuple{
+    std::pair{
+      std::regex{R"(^<(\S+)(\s.*?)?>((.|\s)*?)<\/\1>)"},
+      [](const auto &match, auto &parent){
+        // node with body
+        parse(
+            std::string_view(match[3].first, match[3].length()),
+            std::get<DOMObject>(parent.children.emplace_back(DOMObject(match.str(1), parse_attributes(match[2]))))
+            );
+      }
+    },
+    std::pair{
+      std::regex{R"(^<(\S+)(\s.*?)?\/>)"},
+      [](const auto &match, auto &parent){
+        // empty node
+        parent.children.emplace_back(DOMObject(match.str(1), parse_attributes(match[2])));
+      }
+    },
+    std::pair{
+      std::regex{R"(^[^<]+)"},
+      [](const auto &match, auto &parent){
+        // cdata
+        parent.children.emplace_back(match.str(0));
+      }
+    },
+    std::pair{
+      std::regex{R"(^\s+)"},
+      [](const auto &, auto &){
+        // whitespace
       }
     }
+  };
+
+  auto find_match = [](const auto &regex, auto &chars, const auto &action, auto &parent){
+    if (std::cmatch results;
+        std::regex_search(chars.begin(), chars.end(), results, regex))
+    {
+      chars.remove_prefix(results.length(0));
+      action(results, parent);
+      return true;
+    } else {
+      return false;
+    }
+  };
+
+
+  while (!chars.empty()) {
+    std::apply(
+        [&](auto && ... param){
+          (find_match(std::get<0>(param), chars, std::get<1>(param), parent) || ...);
+        },
+        regexes
+      );
   }
 }
 
