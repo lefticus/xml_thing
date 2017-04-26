@@ -35,27 +35,24 @@ std::map<std::string, std::string> parse_attributes(const std::sub_match<Char> &
 
 void parse(std::string_view chars, DOMObject &parent)
 {
-  static const std::pair node_with_body {
-    std::regex{R"(^<(\S+)(\s.*?)?>((.|\s)*?)<\/\1>)"},
-    [](const auto &match, auto &parent){
-      parse( std::string_view(match[3].first, match[3].length()),
-             std::get<DOMObject>(parent.children.emplace_back(DOMObject(match.str(1), parse_attributes(match[2]))))
-          );
-    }
+  constexpr auto node_match = [](const auto &match, auto &parent){
+    parse( std::string_view(match[3].first, match[3].length()),
+        std::get<DOMObject>(parent.children.emplace_back(DOMObject(match.str(1), parse_attributes(match[2]))))
+        );
   };
-
-  static const std::pair empty_node {
-    std::regex{R"(^<(\S+)(\s.*?)?\/>)"},
-    [](const auto &match, auto &parent){
-      parent.children.emplace_back(DOMObject(match.str(1), parse_attributes(match[2])));
-    }
+  constexpr auto empty_node_match = [](const auto &match, auto &parent){
+    parent.children.emplace_back(DOMObject(match.str(1), parse_attributes(match[2])));
   };
+  constexpr auto cdata_match = [](const auto &match, auto &parent){ parent.children.emplace_back(match.str(0)); };
+  constexpr auto whitespace_match = [](const auto &, auto &){ };
 
-  static const std::pair cdata {
-    std::regex{R"(^[^<]+)"}, [](const auto &match, auto &parent){ parent.children.emplace_back(match.str(0)); }
+  typedef void (*Match)(const std::cmatch &, DOMObject &parent);
+  static const std::pair<std::regex, Match> events[] = { 
+    { std::regex{R"(^<(\S+)(\s.*?)?>((.|\s)*?)<\/\1>)"}, node_match       },
+    { std::regex{R"(^<(\S+)(\s.*?)?\/>)"}              , empty_node_match },
+    { std::regex{R"(^[^<]+)"}                          , cdata_match      },
+    { std::regex{R"(^\s+)"}                            , whitespace_match }
   };
-
-  static const std::pair whitespace {std::regex{R"(^\s+)"}, [](auto && ...){ } };
 
   auto find_match = [](const auto &parser, auto &chars, auto &parent){
     if (std::cmatch results;
@@ -63,14 +60,18 @@ void parse(std::string_view chars, DOMObject &parent)
     {
       chars.remove_prefix(results.length(0));
       parser.second(results, parent);
+      return true;
+    } else {
+      return false;
     }
   };
 
   while (!chars.empty()) {
-    find_match(node_with_body, chars, parent);
-    find_match(empty_node, chars, parent);
-    find_match(cdata, chars, parent);
-    find_match(whitespace, chars, parent);
+    const auto matched = std::any_of(std::cbegin(events), std::cend(events),
+          [&](const auto &event) { return find_match(event, chars, parent); } );
+    if (!matched) {
+      throw std::runtime_error("Mismatched Parse");
+    }
   }
 }
 
@@ -106,8 +107,10 @@ int main()
   const auto thing1 = R"(<doc param='value' param2="value2"><other_thing></other_thing></doc> some s
   trings
   <tag value="something" value2=' "another" '/>
-  stuff <stuff></stuff>)";
+  stuff<stuff></stuff>)";
 
   DOMObject doc = parse(thing1);
   print(doc);
 }
+
+
