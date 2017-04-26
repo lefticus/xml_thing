@@ -33,6 +33,14 @@ std::map<std::string, std::string> parse_attributes(const std::sub_match<Char> &
   return retval;
 }
 
+template<typename Callable, typename Tuple>
+bool any_of_elem(Tuple &&tuple, Callable &&func)
+{
+  return std::apply([&func](auto&&... xs) {
+     return (func(std::forward<decltype(xs)>(xs)) || ...);
+  }, std::forward<Tuple>(tuple));
+}
+
 void parse(std::string_view chars, DOMObject &parent)
 {
   constexpr auto node_match = [](const auto &match, auto &parent){
@@ -46,12 +54,11 @@ void parse(std::string_view chars, DOMObject &parent)
   constexpr auto cdata_match = [](const auto &match, auto &parent){ parent.children.emplace_back(match.str(0)); };
   constexpr auto whitespace_match = [](const auto &, auto &){ };
 
-  typedef void (*Match)(const std::cmatch &, DOMObject &parent);
-  static const std::pair<std::regex, Match> events[] = { 
-    { std::regex{R"(^<(\S+)(\s.*?)?>((.|\s)*?)<\/\1>)"}, node_match       },
-    { std::regex{R"(^<(\S+)(\s.*?)?\/>)"}              , empty_node_match },
-    { std::regex{R"(^[^<]+)"}                          , cdata_match      },
-    { std::regex{R"(^\s+)"}                            , whitespace_match }
+  static const std::tuple events = { 
+    std::pair{ std::regex{R"(^<(\S+)(\s.*?)?>((.|\s)*?)<\/\1>)"}, node_match       },
+    std::pair{ std::regex{R"(^<(\S+)(\s.*?)?\/>)"}              , empty_node_match },
+    std::pair{ std::regex{R"(^[^<]+)"}                          , cdata_match      },
+    std::pair{ std::regex{R"(^\s+)"}                            , whitespace_match }
   };
 
   auto find_match = [](const auto &parser, auto &chars, auto &parent){
@@ -67,7 +74,7 @@ void parse(std::string_view chars, DOMObject &parent)
   };
 
   while (!chars.empty()) {
-    const auto matched = std::any_of(std::cbegin(events), std::cend(events),
+    const auto matched = any_of_elem(events,
           [&](const auto &event) { return find_match(event, chars, parent); } );
     if (!matched) {
       throw std::runtime_error("Mismatched Parse");
