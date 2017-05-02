@@ -68,28 +68,32 @@ auto get_color(const Point<PointType> &t_point, const Point<CenterType> &t_cente
     const auto value = ((iteration + 1) - (std::log(std::log(std::abs(x * y))))/std::log(2.0)); 
     const auto colorval = static_cast<int>(std::floor(value * 10.0));
 
-    if (colorval < 256)
-    {
-      return Color{colorval/256.0, 0.0, 0.0};
-    } else {
-      const auto colorband = ((colorval - 256) % 1024) / 256;
-      const auto mod256 = colorval % 256;
-      if (colorband == 0) {
-        return Color{1.0, mod256 / 255.0, 0.0};
-      } else if (colorband == 1) {
-        return Color{1.0, 1.0, mod256 / 255.0};
-      } else if (colorband == 2) {
-        return Color{1.0, 1.0, 1.0 - (mod256 / 255.0)};
-      } else {
-        return Color{1.0, 1.0 - (mod256 / 255.0), 0.0};
-      }
+    const auto colorband = colorval % (256 * 7) / 256;
+    const auto mod256 = colorval % 256;
+    const auto to_1 = mod256 / 255.0;
+    const auto to_0 = 1.0 - to_1;
+
+    switch(colorband) {
+      case 0:
+        return Color{to_1, 0.0, 0.0};
+      case 1:
+        return Color{1.0, to_1, 0.0};
+      case 2:
+        return Color{to_0, 1.0, 0.0};
+      case 3:
+        return Color{0.0,  1.0, to_1};
+      case 4:
+        return Color{0.0, to_0, 1.0};
+      case 5:
+        return Color{to_1, 0.0, 1.0};
+      case 6:
+        return Color{to_0, 0.0, to_0};
     }
   }
 }
 
 
-struct SetPixel
-{
+struct SetPixel {
   constexpr SetPixel(sf::Image &t_img) noexcept
     : img(t_img)
     {
@@ -191,7 +195,7 @@ int main() {
   bufferSprite.setTextureRect(sf::IntRect(0,0,size.width,size.height));
   bufferSprite.setPosition(0,0);
 
-  Point center{0.001643721971153, -0.822467633298876};
+  Point center{0.001643721971153l, -0.822467633298876l};
   auto scale = 0.01;
 
   std::vector<std::future<ImageBlock<block_size.width, block_size.height>>> pixels;
