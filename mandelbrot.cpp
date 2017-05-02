@@ -2,6 +2,8 @@
 #include <SFML/Window.hpp>
 #include <cmath>
 #include <iostream>
+#include <thread>
+#include <future>
 
 template<typename T>
 struct Point {
@@ -49,8 +51,7 @@ auto get_color(const Point<PointType> &t_point, const Point<CenterType> &t_cente
 
   while ( iteration < stop_iteration )
   {
-    if ((x*x) + (y*y) > (2.0*2.0) && stop_iteration == max_iteration)
-    {
+    if ((x*x) + (y*y) > (2.0*2.0) && stop_iteration == max_iteration) {
       stop_iteration = iteration + 5;
     }
 
@@ -106,14 +107,76 @@ struct SetPixel
       return sf::Color(to_8bit(color.r), to_8bit(color.g), to_8bit(color.b));
     };
     const auto color = to_sf_color(t_color);
-//    std::cout << "new r: " << static_cast<int>(color.r) << " g: " << static_cast<int>(color.g) << " b: " << static_cast<int>(color.b) << '\n';
     img.setPixel(t_point.x, t_point.y, to_sf_color(t_color));
   }
 };
 
-int main()
+template<std::size_t BlockWidth, std::size_t BlockHeight>
+struct ImageBlock
 {
-  const Size size{600, 600};
+  using Row = std::array<Color<double>, BlockWidth>;
+  Point<std::size_t> upper_left;
+  std::array<Row, BlockHeight> image;
+
+  static constexpr const auto width = BlockWidth;
+  static constexpr const auto height = BlockHeight;
+};
+
+template<size_t BlockWidth, size_t BlockHeight, typename SizeType, typename CenterType, typename Container>
+void future_pixels(const Size<SizeType> &t_size, const Point<CenterType> &t_center,
+                   const double t_scale, Container &t_container)
+{
+  for (std::size_t y = 0; y < t_size.height; y += BlockHeight)
+  {
+    for (std::size_t x = 0; x < t_size.width; x += BlockWidth)
+    {
+      t_container.push_back(
+          std::async(
+            [p = Point{x, y}, t_size, t_center, t_scale](){
+              using Row = std::array<Color<double>, BlockWidth>;
+              ImageBlock<BlockWidth, BlockHeight> image{p};
+
+              for (std::size_t x = 0; x < image.width; ++x) {
+                for (std::size_t y = 0; y < image.height; ++y) {
+                  image.image[y][x] = get_color(Point{p.x + x, p.y + y}, t_center, t_size, t_scale);
+                }
+              }
+              return image;
+            }
+          )
+        );
+    }
+  }
+}
+
+template<typename Container>
+bool cull_pixels(Container &t_container, SetPixel &t_set_pixel)
+{
+  const auto did_something = !t_container.empty();
+
+  std::for_each(t_container.begin(), t_container.end(), 
+      [&](auto &f){
+        const auto result = f.get();
+
+        for (std::size_t x = 0; x < result.width; ++x) {
+          for (std::size_t y = 0; y < result.height; ++y) {
+            t_set_pixel.set_pixel(
+                Point{result.upper_left.x + x, result.upper_left.y + y},
+                result.image[y][x]
+              );
+          }
+        }
+      }
+    );
+
+  t_container.clear();
+  return did_something;
+}
+
+int main() {
+  const Size size{640u, 640u};
+  constexpr const Size block_size{160u, 160u};
+
   sf::RenderWindow window(sf::VideoMode(size.width, size.height), "Tilemap");
   window.setVerticalSyncEnabled(true);
 
@@ -129,26 +192,65 @@ int main()
   bufferSprite.setPosition(0,0);
 
   Point center{0.001643721971153, -0.822467633298876};
-  // run the main loop
-  for (auto y = 0; y < size.height; ++y)
-  {
-    for (auto x = 0; x < size.width; ++x)
-    {
-      const auto p = Point{x, y};
-      const auto color = get_color(p, center, size, .250);
-  //    std::cout << "r: " << color.r << " g: " << color.g << " b: " << color.b << '\n';
-      sp.set_pixel(p, color);
-  //    std::cout << "x: " << x << " y: " << y << '\n';
+  auto scale = 0.01;
+
+  std::vector<std::future<ImageBlock<block_size.width, block_size.height>>> pixels;
+
+  auto see_the_future = [&](){
+    future_pixels<block_size.width, block_size.height>(size, center, scale, pixels);
+  };
+
+  see_the_future();
+
+  while (window.isOpen()) {
+    if (cull_pixels(pixels, sp)) {
+      texture.loadFromImage(img);
     }
-    texture.loadFromImage(img);
+
     window.draw(bufferSprite);
     window.display();
+
+    const bool future_changed = 
+      [&](){
+        bool changed = false;
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::PageUp)) {
+          scale *= 0.9;
+          changed = true;
+        }
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::PageDown)) {
+          scale *= 1.1;
+          changed = true;
+        }
+        auto move_offset = scale / 640;
+
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::LShift)) {
+          move_offset *= 10;
+        }
+
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::Left)) {
+          center.x -= move_offset;
+          changed = true;
+        }
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::Right)) {
+          center.x += move_offset;
+          changed = true;
+        }
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::Up)) {
+          center.y -= move_offset;
+          changed = true;
+        }
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::Down)) {
+          center.y += move_offset;
+          changed = true;
+        }
+
+        return changed;
+      }();
+
+    if (future_changed) {
+      see_the_future();
+    }
   }
 
-  while (window.isOpen())
-  {
-    window.draw(bufferSprite);
-    window.display();
-  }
 }
 
