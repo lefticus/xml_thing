@@ -16,10 +16,61 @@ Point(T x, T y) -> Point<T>;
 
 
 template<typename T>
+struct SizeWithStepping {
+  T width{};
+  T height{};
+  T xstepping{1};
+  T ystepping{1};
+};
+
+template<typename T>
 struct Size {
   T width{};
   T height{};
+  constexpr SizeWithStepping<T> iterable(const T xstep, const T ystep) const noexcept
+  {
+    return SizeWithStepping<T>{width, height, xstep, ystep};
+  }
 };
+
+template<typename T>
+struct SizeIterator {
+  const T width = 0;
+  const T height = 0;
+  std::pair<T, T> stepping{1,1};
+  std::pair<T, T> loc{0,0};
+
+  constexpr SizeIterator &operator++() noexcept {
+    loc.first += stepping.first;
+    if (loc.first >= width) {
+      loc.first = 0; 
+      loc.second += stepping.second;
+    }
+    return *this;
+  }
+
+  constexpr bool operator!=(const SizeIterator<T> &other) const noexcept {
+    return loc != other.loc;
+  }
+
+  constexpr const std::pair<T, T> &operator*() const noexcept {
+    return loc;
+  }
+  constexpr std::pair<T, T> &operator*() noexcept {
+    return loc;
+  }
+};
+
+template<typename T>
+constexpr SizeIterator<T> begin(const SizeWithStepping<T> &t_s) noexcept {
+  return SizeIterator<T>{t_s.width, t_s.height, {t_s.xstepping, t_s.ystepping}};
+}
+
+template<typename T>
+constexpr SizeIterator<T> end(const SizeWithStepping<T> &t_s) noexcept {
+  return SizeIterator<T>{t_s.width, t_s.height, {t_s.xstepping, t_s.ystepping}, {0, t_s.height}};
+}
+
 
 template<typename T>
 Size(T width, T height) -> Size<T>;
@@ -119,11 +170,16 @@ template<std::size_t BlockWidth, std::size_t BlockHeight>
 struct ImageBlock
 {
   using Row = std::array<Color<double>, BlockWidth>;
+
+  template<typename T>
+  explicit constexpr ImageBlock(const Point<T> p) noexcept 
+    : upper_left{p.x, p.y}
+  {}
+
   Point<std::size_t> upper_left;
   std::array<Row, BlockHeight> image;
 
-  static constexpr const auto width = BlockWidth;
-  static constexpr const auto height = BlockHeight;
+  static constexpr const auto size = Size<std::size_t>{BlockWidth, BlockHeight};
 };
 
 template<size_t BlockWidth, size_t BlockHeight, typename SizeType, typename CenterType, typename Container>
@@ -132,26 +188,20 @@ void future_pixels(const Size<SizeType> &t_size, const Point<CenterType> &t_cent
 {
   t_container.clear();
 
-  for (std::size_t y = 0; y < t_size.height; y += BlockHeight)
-  {
-    for (std::size_t x = 0; x < t_size.width; x += BlockWidth)
-    {
-      t_container.push_back(
-          std::async(
-            [p = Point{x, y}, t_size, t_center, t_scale](){
-              using Row = std::array<Color<double>, BlockWidth>;
-              ImageBlock<BlockWidth, BlockHeight> image{p};
+  for (const auto [x, y] : t_size.iterable(BlockWidth, BlockHeight)) {
+    t_container.push_back(
+        std::async(
+          [p = Point{x, y}, t_size, t_center, t_scale](){
+            using Row = std::array<Color<double>, BlockWidth>;
+            ImageBlock<BlockWidth, BlockHeight> image{p};
 
-              for (std::size_t x = 0; x < image.width; ++x) {
-                for (std::size_t y = 0; y < image.height; ++y) {
-                  image.image[y][x] = get_color(Point{p.x + x, p.y + y}, t_center, t_size, t_scale);
-                }
-              }
-              return image;
+            for (const auto [x, y] : image.size.iterable(1,1)) {
+              image.image[y][x] = get_color(Point{p.x + x, p.y + y}, t_center, t_size, t_scale);
             }
-          )
-        );
-    }
+            return image;
+          }
+        )
+      );
   }
 }
 
@@ -163,13 +213,12 @@ bool cull_pixels(Container &t_container, SetPixel &t_set_pixel)
         if (f.valid() && f.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
         {
           auto result = f.get();
-          for (std::size_t x = 0; x < result.width; ++x) {
-            for (std::size_t y = 0; y < result.height; ++y) {
-              t_set_pixel.set_pixel(
-                  Point{result.upper_left.x + x, result.upper_left.y + y},
-                  result.image[y][x]
-                );
-            }
+
+          for (const auto &[x, y] : result.size.iterable(1,1)) {
+            t_set_pixel.set_pixel(
+                Point{result.upper_left.x + x, result.upper_left.y + y},
+                result.image[y][x]
+              );
           }
           return true;
         } else {
