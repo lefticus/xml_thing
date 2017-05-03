@@ -130,6 +130,8 @@ template<size_t BlockWidth, size_t BlockHeight, typename SizeType, typename Cent
 void future_pixels(const Size<SizeType> &t_size, const Point<CenterType> &t_center,
                    const double t_scale, Container &t_container)
 {
+  t_container.clear();
+
   for (std::size_t y = 0; y < t_size.height; y += BlockHeight)
   {
     for (std::size_t x = 0; x < t_size.width; x += BlockWidth)
@@ -156,30 +158,36 @@ void future_pixels(const Size<SizeType> &t_size, const Point<CenterType> &t_cent
 template<typename Container>
 bool cull_pixels(Container &t_container, SetPixel &t_set_pixel)
 {
-  const auto did_something = !t_container.empty();
-
-  std::for_each(t_container.begin(), t_container.end(), 
-      [&](auto &f){
-        const auto result = f.get();
-
-        for (std::size_t x = 0; x < result.width; ++x) {
-          for (std::size_t y = 0; y < result.height; ++y) {
-            t_set_pixel.set_pixel(
-                Point{result.upper_left.x + x, result.upper_left.y + y},
-                result.image[y][x]
-              );
+  const auto done = std::remove_if(t_container.begin(), t_container.end(), 
+      [&](auto &f) {
+        if (f.valid() && f.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+        {
+          auto result = f.get();
+          for (std::size_t x = 0; x < result.width; ++x) {
+            for (std::size_t y = 0; y < result.height; ++y) {
+              t_set_pixel.set_pixel(
+                  Point{result.upper_left.x + x, result.upper_left.y + y},
+                  result.image[y][x]
+                );
+            }
           }
+          return true;
+        } else {
+          return false;
         }
       }
     );
 
-  t_container.clear();
+  const auto did_something = done != t_container.end();
+
+  t_container.erase(done, t_container.end());
+
   return did_something;
 }
 
 int main() {
   const Size size{640u, 640u};
-  constexpr const Size block_size{160u, 160u};
+  constexpr const Size block_size{40u, 40u};
 
   sf::RenderWindow window(sf::VideoMode(size.width, size.height), "Tilemap");
   window.setVerticalSyncEnabled(true);
@@ -230,7 +238,6 @@ int main() {
         if (sf::Keyboard::isKeyPressed(sf::Keyboard::LShift)) {
           move_offset *= 10;
         }
-
         if (sf::Keyboard::isKeyPressed(sf::Keyboard::Left)) {
           center.x -= move_offset;
           changed = true;
@@ -255,6 +262,5 @@ int main() {
       see_the_future();
     }
   }
-
 }
 
