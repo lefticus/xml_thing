@@ -2,6 +2,7 @@
 #include <array>
 #include <memory>
 #include <iostream>
+#include <map>
 
 /// Helpers
 
@@ -101,11 +102,61 @@ struct Function_Signature {
 template<typename Ret, typename ... Param>
 Function_Signature(Ret (*f)(Param...)) -> Function_Signature<Ret, Param...>;
 
-template<typename Ret, typename Class, typename ... Param>
-Function_Signature(Ret (Class::*f)(Param ...)) -> Function_Signature<Ret, Class &, Param...>;
+template<typename Ret, typename ... Param>
+Function_Signature(Ret (*f)(Param...) noexcept) -> Function_Signature<Ret, Param...>;
+
 
 template<typename Ret, typename Class, typename ... Param>
-Function_Signature(Ret (Class::*f)(Param ...) const) -> Function_Signature<Ret, const Class &, Param...>;
+Function_Signature(Ret (Class::*f)(Param ...) volatile &) -> Function_Signature<Ret, volatile Class &, Param...>;
+
+template<typename Ret, typename Class, typename ... Param>
+Function_Signature(Ret (Class::*f)(Param ...) volatile & noexcept) -> Function_Signature<Ret, volatile Class &, Param...>;
+
+template<typename Ret, typename Class, typename ... Param>
+Function_Signature(Ret (Class::*f)(Param ...) volatile const &) -> Function_Signature<Ret, volatile const Class &, Param...>;
+
+template<typename Ret, typename Class, typename ... Param>
+Function_Signature(Ret (Class::*f)(Param ...) volatile const & noexcept) -> Function_Signature<Ret, volatile const Class &, Param...>;
+
+template<typename Ret, typename Class, typename ... Param>
+Function_Signature(Ret (Class::*f)(Param ...) & ) -> Function_Signature<Ret, Class &, Param...>;
+
+template<typename Ret, typename Class, typename ... Param>
+Function_Signature(Ret (Class::*f)(Param ...) & noexcept) -> Function_Signature<Ret, Class &, Param...>;
+
+template<typename Ret, typename Class, typename ... Param>
+Function_Signature(Ret (Class::*f)(Param ...) const &) -> Function_Signature<Ret, const Class &, Param...>;
+
+template<typename Ret, typename Class, typename ... Param>
+Function_Signature(Ret (Class::*f)(Param ...) const & noexcept) -> Function_Signature<Ret, const Class &, Param...>;
+
+
+
+
+template<typename Ret, typename Class, typename ... Param>
+Function_Signature(Ret (Class::*f)(Param ...) volatile &&) -> Function_Signature<Ret, volatile Class &&, Param...>;
+
+template<typename Ret, typename Class, typename ... Param>
+Function_Signature(Ret (Class::*f)(Param ...) volatile && noexcept) -> Function_Signature<Ret, volatile Class &&, Param...>;
+
+template<typename Ret, typename Class, typename ... Param>
+Function_Signature(Ret (Class::*f)(Param ...) volatile const &&) -> Function_Signature<Ret, volatile const Class &&, Param...>;
+
+template<typename Ret, typename Class, typename ... Param>
+Function_Signature(Ret (Class::*f)(Param ...) volatile const && noexcept) -> Function_Signature<Ret, volatile const Class &&, Param...>;
+
+template<typename Ret, typename Class, typename ... Param>
+Function_Signature(Ret (Class::*f)(Param ...) &&) -> Function_Signature<Ret, Class &&, Param...>;
+
+template<typename Ret, typename Class, typename ... Param>
+Function_Signature(Ret (Class::*f)(Param ...) && noexcept) -> Function_Signature<Ret, Class &&, Param...>;
+
+template<typename Ret, typename Class, typename ... Param>
+Function_Signature(Ret (Class::*f)(Param ...) const &&) -> Function_Signature<Ret, const Class &&, Param...>;
+
+template<typename Ret, typename Class, typename ... Param>
+Function_Signature(Ret (Class::*f)(Param ...) const && noexcept) -> Function_Signature<Ret, const Class &&, Param...>;
+
 
 template<typename Func>
 Function_Signature(Func &&) -> Function_Signature<decltype(Function_Signature{&std::decay_t<Func>::operator()})>;
@@ -162,20 +213,38 @@ struct Int
     return m_val + j;
   }
 
+  int add(double k) const volatile noexcept {
+    return m_val * 2 + k;
+  }
+
   int m_val;
+};
+
+struct Dispatcher
+{
+  std::vector<GenericCallable> callables;
+};
+
+struct Simple_Script
+{
+  std::map<std::string, Dispatcher> dispatchers;
 };
 
 int main()
 {
-  GenericCallable callable(&my_func);
-  GenericCallable callable2(&Int::add);
-  GenericCallable callable3([](){ return 1; });
+  Simple_Script script;
+  script.dispatchers["func"].emplace_back(&my_func);
+  script.dispatchers["add"].emplace_back(&Int::add);
+  script.dispatchers["add"].emplace_back(&Int::add2);
+  script.dispatchers["lambda"].emplace_back(&my_func);
 
   std::array<Any, 2> params{1,2};
   std::cout << cast<int>(callable.caller(Array_View{params}).second) << '\n';
 
   std::array<Any, 2> params2{Int(2), 4};
   std::cout << cast<int>(callable2.caller(Array_View{params2}).second) << '\n';
+
+  std::cout << cast<int>(callable4.caller(Array_View{params2}).second) << '\n';
 }
 
 
