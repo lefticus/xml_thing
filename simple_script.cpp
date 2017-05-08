@@ -210,8 +210,8 @@ Function_Signature(Func &&) -> Function_Signature<
   
 struct GenericCallable
 {
-  template<typename Func, typename ... Param, size_t ... Indexes>
-    static decltype(auto) my_invoke(Func &f, Array_View<Any> params, std::index_sequence<Indexes...>)
+  template<bool Is_Noexcept, typename Func, typename ... Param, size_t ... Indexes>
+    static decltype(auto) my_invoke(Func &f, Array_View<Any> params, std::index_sequence<Indexes...>) noexcept(Is_Noexcept)
     {
       return (std::invoke(std::forward<Func>(f), cast<Param>(params[Indexes])...));
     };
@@ -223,10 +223,10 @@ struct GenericCallable
   template<typename Func, bool Is_Noexcept, bool Is_MemberObject, bool Is_Object, typename Ret, typename ... Param>
   GenericCallable(Func &&func, Function_Signature<Ret, Function_Params<Param...>, Is_Noexcept, Is_MemberObject, Is_Object>, Tag)
     : caller (
-        [func = std::forward<Func>(func)](Array_View<Any> params) mutable {
+        [func = std::forward<Func>(func)](Array_View<Any> params) mutable noexcept(Is_Noexcept) {
         return std::pair<bool, Any>(
             true,
-            Any(my_invoke<decltype(func), Param...>(func,  params, std::index_sequence_for<Param...>()))
+            Any(my_invoke<Is_Noexcept, decltype(func), Param...>(func,  params, std::index_sequence_for<Param...>()))
             );
         }
         )
