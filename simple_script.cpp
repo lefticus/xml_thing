@@ -3,6 +3,7 @@
 #include <memory>
 #include <iostream>
 #include <map>
+#include <type_traits>
 
 /// Helpers
 
@@ -10,7 +11,7 @@ template<typename T>
 struct Array_View
 {
   template<size_t Size>
-  explicit constexpr Array_View(std::array<T, Size> &a)
+  explicit constexpr Array_View(std::array<T, Size> &a) noexcept
     : m_data(a.begin()), m_end(a.end())
   {
   }
@@ -55,33 +56,52 @@ struct Any
   template<typename T>
   struct Any_Impl_Detail : Any_Impl
   {
-    void *data() override {
+    void *data() noexcept override {
       return &m_data;
     }
-    Any_Impl_Detail(T data) : m_data(std::move(data)) {
+
+    // is this correct? What if the thing is not moveable and this move reverts to a copy?
+    constexpr Any_Impl_Detail(T data) noexcept((std::is_move_constructible_v<T>
+                                                && std::is_nothrow_move_constructible_v<T>)
+                                               || (!std::is_move_constructible_v<T>
+                                                   && std::is_nothrow_copy_constructible_v<T>))
+      : m_data(std::move(data)) {
     }
 
     T m_data;
   };
 
 
-  template<typename T, typename = std::enable_if_t<!std::is_same_v<T, Any>>>
-  Any(T &&t)
-    : data(std::make_unique<Any_Impl_Detail<T>>(std::forward<T>(t)))
+  template<typename T>
+  Any(Any_Impl_Detail<T> detail)
+    : data(std::make_unique<Any_Impl_Detail<T>>(std::move(detail)))
   {
   }
 
   std::unique_ptr<Any_Impl> data;
 };
 
+template<typename T>
+constexpr auto make_any(T &&t)
+{
+  return Any::Any_Impl_Detail<T>(std::forward<T>(t));
+}
+
 template<typename Result>
-decltype(auto) cast(const Any &value)
+constexpr decltype(auto) cast(Any::Any_Impl &value)
 {
   if constexpr(std::is_lvalue_reference_v<Result>) {
-    return *static_cast<std::remove_reference_t<Result> *>(value.data->data());
+    return (*static_cast<std::remove_reference_t<Result> *>(value.data()));
   } else {
-    return *static_cast<Result *>(value.data->data());
+    return (*static_cast<Result *>(value.data()));
   }
+}
+
+
+template<typename Result>
+constexpr decltype(auto) cast(const Any &value)
+{
+  return cast<Result>(*value.data.get());
 }
 
 
@@ -105,8 +125,8 @@ struct Function_Signature {
   constexpr static const bool is_member_object = IsMemberObject;
   constexpr static const bool is_noexcept = IsNoExcept;
   template<typename T>
-  Function_Signature(T &&) {}
-  Function_Signature() {}
+  constexpr Function_Signature(T &&) noexcept {}
+  constexpr Function_Signature() noexcept = default;
 };
 
 // Free functions
@@ -211,9 +231,9 @@ Function_Signature(Func &&) -> Function_Signature<
 struct GenericCallable
 {
   template<bool Is_Noexcept, typename Func, typename ... Param, size_t ... Indexes>
-    static decltype(auto) my_invoke(Func &f, Array_View<Any> params, std::index_sequence<Indexes...>) noexcept(Is_Noexcept)
+    constexpr static decltype(auto) my_invoke(Func &f, [[maybe_unused]] Array_View<Any::Any_Impl *> params, std::index_sequence<Indexes...>) noexcept(Is_Noexcept)
     {
-      return (std::invoke(std::forward<Func>(f), cast<Param>(params[Indexes])...));
+      return (std::invoke(std::forward<Func>(f), cast<Param>(*params[Indexes])...));
     };
 
   struct Tag
@@ -223,10 +243,10 @@ struct GenericCallable
   template<typename Func, bool Is_Noexcept, bool Is_MemberObject, bool Is_Object, typename Ret, typename ... Param>
   GenericCallable(Func &&func, Function_Signature<Ret, Function_Params<Param...>, Is_Noexcept, Is_MemberObject, Is_Object>, Tag)
     : caller (
-        [func = std::forward<Func>(func)](Array_View<Any> params) mutable noexcept(Is_Noexcept) {
+        [func = std::forward<Func>(func)](Array_View<Any::Any_Impl *> params) mutable noexcept(Is_Noexcept) {
         return std::pair<bool, Any>(
             true,
-            Any(my_invoke<Is_Noexcept, decltype(func), Param...>(func,  params, std::index_sequence_for<Param...>()))
+            make_any(my_invoke<Is_Noexcept, decltype(func), Param...>(func,  params, std::index_sequence_for<Param...>()))
             );
         }
         )
@@ -248,7 +268,7 @@ struct GenericCallable
   {
   }
 
-  std::function<std::pair<bool, Any> (Array_View<Any>)> caller;
+  std::function<std::pair<bool, Any> (Array_View<Any::Any_Impl *>)> caller;
 };
 
 
@@ -292,18 +312,24 @@ struct Simple_Script
 
 int main()
 {
-  Simple_Script script;
-  script.dispatchers["func"].callables.emplace_back(&my_func);
-  script.dispatchers["add"].callables.emplace_back(&Int::add);
-  script.dispatchers["add"].callables.emplace_back(&Int::add2);
-  script.dispatchers["lambda"].callables.emplace_back(&my_func);
-  script.dispatchers["add"].callables.emplace_back([](double d, double d2) { return d + d2; });
+//  Simple_Script script;
+//  script.dispatchers["func"].callables.emplace_back(&my_func);
+//  script.dispatchers["add"].callables.emplace_back(&Int::add);
+//  script.dispatchers["add"].callables.emplace_back(&Int::add2);
+//  script.dispatchers["lambda"].callables.emplace_back(&my_func);
+//  script.dispatchers["add"].callables.emplace_back([](double d, double d2) { return d + d2; });
 
-  GenericCallable callable{[](double d, double d2) { return d + d2; }};
+  GenericCallable callable2{[]{return std::make_unique<int>(42); }};
+  GenericCallable callable{[](double d, double d2) noexcept { return d + d2; }};
+
+  static_assert(Function_Signature{[](double d, double d2) noexcept { return d + d2; }}.is_noexcept);
+  static_assert(!Function_Signature{[](double d, double d2) { return d + d2; }}.is_noexcept);
 
   //return std::invoke([](double d, double d2) { return d + d2;}, 5.2, 6.4);
 
-//  std::array<Any, 2> params{1,2};
+  std::tuple t{make_any(1.6), make_any(2.8)};
+  std::array<Any::Any_Impl *, 2> params{&std::get<0>(t), &std::get<1>(t)};
+  return cast<int>(callable.caller(Array_View{params}).second);
 //  std::cout << cast<int>(callable.caller(Array_View{params}).second) << '\n';
 
 //  std::array<Any, 2> params2{Int(2), 4};
