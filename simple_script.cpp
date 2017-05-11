@@ -4,6 +4,7 @@
 #include <iostream>
 #include <map>
 #include <type_traits>
+#include <cassert>
 
 /// Helpers
 
@@ -51,24 +52,60 @@ struct Any
   struct Any_Impl
   {
     virtual void *data() = 0;
+    virtual const void *c_data() = 0;
   };
 
   template<typename T>
   struct Any_Impl_Detail : Any_Impl
   {
-    void *data() noexcept override {
+    constexpr const void *c_data() noexcept final {
       return &m_data;
     }
 
-    // is this correct? What if the thing is not moveable and this move reverts to a copy?
-    constexpr Any_Impl_Detail(T data) noexcept((std::is_move_constructible_v<T>
-                                                && std::is_nothrow_move_constructible_v<T>)
-                                               || (!std::is_move_constructible_v<T>
-                                                   && std::is_nothrow_copy_constructible_v<T>))
-      : m_data(std::move(data)) {
+    constexpr void *data() noexcept final {
+      if constexpr (std::is_const_v<T>) {
+        return nullptr;
+      } else {
+        return &m_data;
+      }
+    }
+
+    constexpr Any_Impl_Detail(const T &t)
+      noexcept(std::is_nothrow_copy_constructible_v<T>)
+      : m_data(t)
+    {
+    }
+
+    constexpr Any_Impl_Detail(T &&t)
+      noexcept(std::is_nothrow_move_constructible_v<T>)
+      : m_data(std::move(t))
+    {
     }
 
     T m_data;
+  };
+
+  template<typename T>
+  struct Any_Impl_Detail<T &> : Any_Impl
+  {
+    constexpr const void *c_data() noexcept final {
+      return &m_data;
+    }
+
+    constexpr void *data() noexcept final {
+      if constexpr (std::is_const_v<T>) {
+        return nullptr;
+      } else {
+        return &m_data;
+      }
+    }
+
+    constexpr Any_Impl_Detail(T &t) noexcept
+      : m_data(t)
+      {
+      }
+
+    T &m_data;
   };
 
 
@@ -84,16 +121,34 @@ struct Any
 template<typename T>
 constexpr auto make_any(T &&t)
 {
-  return Any::Any_Impl_Detail<T>(std::forward<T>(t));
+  return Any::Any_Impl_Detail<std::decay_t<T>>{std::forward<T>(t)};
 }
+
+template<typename T>
+constexpr auto forward_as_any(T &&t)
+{
+  return Any::Any_Impl_Detail<T &&>{std::forward<T>(t)};
+}
+
+template<typename T>
+constexpr auto return_any(T t)
+{
+  if constexpr (!std::is_reference_v<T>) {
+    return Any::Any_Impl_Detail<T>{std::move(t)};
+  } else {
+    return Any::Any_Impl_Detail<T>{t};
+  }
+
+}
+
 
 template<typename Result>
 constexpr decltype(auto) cast(Any::Any_Impl &value)
 {
-  if constexpr(std::is_lvalue_reference_v<Result>) {
-    return (*static_cast<std::remove_reference_t<Result> *>(value.data()));
+  if constexpr(std::is_const_v<Result>) {
+    return (*static_cast<std::remove_reference_t<Result> *>(value.c_data()));
   } else {
-    return (*static_cast<Result *>(value.data()));
+    return (*static_cast<std::remove_reference_t<Result> *>(value.data()));
   }
 }
 
@@ -240,14 +295,15 @@ struct GenericCallable
   {
   };
 
+  // TODO extract out these bits into free functions for like "make_callable"
   template<typename Func, bool Is_Noexcept, bool Is_MemberObject, bool Is_Object, typename Ret, typename ... Param>
   GenericCallable(Func &&func, Function_Signature<Ret, Function_Params<Param...>, Is_Noexcept, Is_MemberObject, Is_Object>, Tag)
     : caller (
         [func = std::forward<Func>(func)](Array_View<Any::Any_Impl *> params) mutable noexcept(Is_Noexcept) {
-        return std::pair<bool, Any>(
+        return std::pair<bool, Any::Any_Impl_Detail<Ret>>{
             true,
-            make_any(my_invoke<Is_Noexcept, decltype(func), Param...>(func,  params, std::index_sequence_for<Param...>()))
-            );
+            return_any<Ret>(my_invoke<Is_Noexcept, decltype(func), Param...>(func,  params, std::index_sequence_for<Param...>()))
+            };
         }
         )
     {}
@@ -295,6 +351,10 @@ struct Int
     return m_val * 2 + k;
   }
 
+  int &val() { return m_val; }
+
+  const int &val2() { return m_val; }
+
   int m_val;
 };
 
@@ -319,8 +379,20 @@ int main()
 //  script.dispatchers["lambda"].callables.emplace_back(&my_func);
 //  script.dispatchers["add"].callables.emplace_back([](double d, double d2) { return d + d2; });
 
+  GenericCallable callable4{&Int::val2};
+  GenericCallable callable3{&Int::val};
   GenericCallable callable2{[]{return std::make_unique<int>(42); }};
   GenericCallable callable{[](double d, double d2) noexcept { return d + d2; }};
+
+  int i=2;
+  auto val = make_any(i);
+
+  static_assert(!std::is_reference_v<decltype(val.m_data)>);
+
+  auto val2 = forward_as_any(i);
+
+  static_assert(std::is_reference_v<decltype(val2.m_data)>);
+
 
   static_assert(Function_Signature{[](double d, double d2) noexcept { return d + d2; }}.is_noexcept);
   static_assert(!Function_Signature{[](double d, double d2) { return d + d2; }}.is_noexcept);
