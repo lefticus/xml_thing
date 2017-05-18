@@ -277,7 +277,7 @@ std::pair<bool, bool> cull_pixels(Container &t_container, SetPixel &t_set_pixel)
 
 int main() {
   const Size size{640u, 640u};
-  constexpr const Size block_size{40u, 40u};
+  constexpr const Size block_size{20u, 20u};
 
   sf::RenderWindow window(sf::VideoMode(size.width, size.height), "Tilemap");
   window.setVerticalSyncEnabled(true);

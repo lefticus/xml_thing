@@ -53,21 +53,41 @@ struct Any
   {
     virtual void *data() = 0;
     virtual const void *c_data() = 0;
+    virtual volatile void *v_data() = 0;
+    virtual const volatile void *cv_data() = 0;
+    Any_Impl(Any_Impl &&) = delete;
+    Any_Impl(const Any_Impl &) = delete;
   };
 
   template<typename T>
   struct Any_Impl_Detail : Any_Impl
   {
     constexpr const void *c_data() noexcept final {
-      return &m_data;
+      if constexpr(std::is_volatile_v<T>) {
+        return nullptr;
+      } else {
+        return &m_data;
+      }
     }
 
     constexpr void *data() noexcept final {
+      if constexpr (std::is_const_v<T> || std::is_volatile_v<T>) {
+        return nullptr;
+      } else {
+        return &m_data;
+      }
+    }
+
+    constexpr volatile void *v_data() noexcept final {
       if constexpr (std::is_const_v<T>) {
         return nullptr;
       } else {
         return &m_data;
       }
+    }
+
+    constexpr const volatile void *cv_data() noexcept final {
+      return &m_data;
     }
 
     constexpr Any_Impl_Detail(const T &t)
@@ -89,16 +109,33 @@ struct Any
   struct Any_Impl_Detail<T &> : Any_Impl
   {
     constexpr const void *c_data() noexcept final {
-      return &m_data;
+      if constexpr(std::is_volatile_v<T>) {
+        return nullptr;
+      } else {
+        return &m_data;
+      }
     }
 
     constexpr void *data() noexcept final {
+      if constexpr (std::is_const_v<T> || std::is_volatile_v<T>) {
+        return nullptr;
+      } else {
+        return &m_data;
+      }
+    }
+
+    constexpr volatile void *v_data() noexcept final {
       if constexpr (std::is_const_v<T>) {
         return nullptr;
       } else {
         return &m_data;
       }
     }
+
+    constexpr const volatile void *cv_data() noexcept final {
+      return &m_data;
+    }
+
 
     constexpr Any_Impl_Detail(T &t) noexcept
       : m_data(t)
@@ -129,6 +166,14 @@ struct Any::Any_Impl_Detail<void> : Any_Impl
   constexpr void *data() noexcept final {
     return nullptr;
   }
+
+  constexpr volatile void *v_data() noexcept final {
+    return nullptr;
+  }
+
+  constexpr const volatile void *cv_data() noexcept final {
+    return nullptr;
+  };
 
   constexpr Any_Impl_Detail()
   {
