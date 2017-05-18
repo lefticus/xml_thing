@@ -11,6 +11,9 @@ template<typename T>
 struct Point {
   T x{};
   T y{};
+  bool operator!=(const Point &p) {
+    return p.x != x || p.y != y;
+  }
 };
 
 template<typename T>
@@ -218,10 +221,14 @@ struct ImageBlock
   {}
 
   Point<std::size_t> upper_left;
+  Point<std::size_t> end{upper_left.x + BlockWidth, upper_left.y + BlockHeight};
   std::array<Row, BlockHeight> image;
 
   static constexpr const auto size = Size<std::size_t>{BlockWidth, BlockHeight};
 };
+
+
+std::atomic<bool> canceling;
 
 template<size_t BlockWidth, size_t BlockHeight, typename SizeType, typename CenterType, typename ScaleType, typename Container>
 void future_pixels(const Size<SizeType> &t_size, const Point<CenterType> &t_center,
@@ -230,15 +237,19 @@ void future_pixels(const Size<SizeType> &t_size, const Point<CenterType> &t_cent
   t_container.clear();
 
   for (const auto [x, y] : t_size.iterable(BlockWidth, BlockHeight)) {
+//    std::cout << "Creating " << x << ", " << y << '\n';
     t_container.push_back(
         std::async(
+          std::launch::async,
           [p = Point{x, y}, t_size, t_center, t_scale, t_max_iteration, t_power, t_do_abs](){
             using Row = std::array<Color<double>, BlockWidth>;
             ImageBlock<BlockWidth, BlockHeight> image{p};
 
             for (const auto [x, y] : image.size.iterable(1,1)) {
+              if (canceling) { image.end = Point{x,y}; break; }
               image.image[y][x] = get_color(Point{p.x + x, p.y + y}, t_center, t_size, t_scale, t_max_iteration, t_power, t_do_abs);
             }
+//            std::cout << "Completed " << p.x << ", " << p.y << '\n';
             return image;
           }
         )
@@ -256,10 +267,11 @@ std::pair<bool, bool> cull_pixels(Container &t_container, SetPixel &t_set_pixel)
           auto result = f.get();
 
           for (const auto &[x, y] : result.size.iterable(1,1)) {
+            const auto p = result.image[y][x];
             t_set_pixel.set_pixel(
                 Point{result.upper_left.x + x, result.upper_left.y + y},
-                result.image[y][x]
-              );
+                p 
+                );
           }
           return true;
         } else {
@@ -277,7 +289,7 @@ std::pair<bool, bool> cull_pixels(Container &t_container, SetPixel &t_set_pixel)
 
 int main() {
   const Size size{640u, 640u};
-  constexpr const Size block_size{20u, 20u};
+  constexpr const Size block_size{160u, 160u};
 
   sf::RenderWindow window(sf::VideoMode(size.width, size.height), "Tilemap");
   window.setVerticalSyncEnabled(true);
@@ -307,7 +319,7 @@ int main() {
 
 
   const std::size_t max_max_iterations = 2000;
-
+ 
   const std::size_t max_iteration_increment = 200;
   const std::size_t start_max_iterations = 400;
 
@@ -315,25 +327,28 @@ int main() {
 
   see_the_future(cur_max_iterations, power, do_abs);
 
-  while (window.isOpen()) {
-    const auto [culled_pixels, none_left] = cull_pixels(pixels, sp);
-    if (culled_pixels) {
+  auto do_draw = [&](const bool reload_image){
+    if (reload_image) {
       texture.loadFromImage(img);
     }
 
     window.draw(bufferSprite);
     window.display();
+  };
 
-    const bool future_changed = 
-      [&](){
+  while (window.isOpen()) {
+    const auto [culled_pixels, none_left] = cull_pixels(pixels, sp);
+
+    do_draw(culled_pixels);
+
+    const auto [new_scale, new_center, new_abs, new_power] = 
+      [=]() mutable {
         bool changed = false;
         if (sf::Keyboard::isKeyPressed(sf::Keyboard::PageUp)) {
           scale *= 0.9;
-          changed = true;
         }
         if (sf::Keyboard::isKeyPressed(sf::Keyboard::PageDown)) {
           scale *= 1.1;
-          changed = true;
         }
         auto move_offset = scale / 640;
 
@@ -342,19 +357,15 @@ int main() {
         }
         if (sf::Keyboard::isKeyPressed(sf::Keyboard::Left)) {
           center.x -= move_offset;
-          changed = true;
         }
         if (sf::Keyboard::isKeyPressed(sf::Keyboard::Right)) {
           center.x += move_offset;
-          changed = true;
         }
         if (sf::Keyboard::isKeyPressed(sf::Keyboard::Up)) {
           center.y -= move_offset;
-          changed = true;
         }
         if (sf::Keyboard::isKeyPressed(sf::Keyboard::Down)) {
           center.y += move_offset;
-          changed = true;
         }
         if (sf::Keyboard::isKeyPressed(sf::Keyboard::P)) {
           if (sf::Keyboard::isKeyPressed(sf::Keyboard::LShift)) {
@@ -362,20 +373,23 @@ int main() {
           } else {
             power -= 0.1;
           }
-          changed = true;
         }
         if (sf::Keyboard::isKeyPressed(sf::Keyboard::A)) {
           do_abs = !do_abs;
-          changed = true;
         }
 
-
-
-        return changed;
+        return std::tuple{scale, center, do_abs, power};
       }();
 
-    if (future_changed) {
+    if (new_scale != scale || center != new_center || new_abs != do_abs || new_power != power) {
       cur_max_iterations = start_max_iterations;
+      canceling = true;
+      do_draw(cull_pixels(pixels, sp).first);
+      canceling = false;
+      scale = new_scale;
+      center = new_center;
+      do_abs = new_abs;
+      power = new_power;
       see_the_future(cur_max_iterations, power, do_abs);
     } else if (none_left) {
       if (cur_max_iterations < max_max_iterations) {
