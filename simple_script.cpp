@@ -102,8 +102,8 @@ struct Any
 
     constexpr Any_Impl_Detail(T &t) noexcept
       : m_data(t)
-      {
-      }
+    {
+    }
 
     T &m_data;
   };
@@ -117,6 +117,24 @@ struct Any
 
   std::unique_ptr<Any_Impl> data;
 };
+
+
+template<>
+struct Any::Any_Impl_Detail<void> : Any_Impl
+{
+  constexpr const void *c_data() noexcept final {
+    return nullptr;
+  }
+
+  constexpr void *data() noexcept final {
+    return nullptr;
+  }
+
+  constexpr Any_Impl_Detail()
+  {
+  }
+};
+
 
 template<typename T>
 constexpr auto make_any(T &&t)
@@ -138,7 +156,11 @@ constexpr auto return_any(T t)
   } else {
     return Any::Any_Impl_Detail<T>{t};
   }
+}
 
+constexpr auto return_any_void()
+{
+  return Any::Any_Impl_Detail<void>{};
 }
 
 
@@ -285,55 +307,64 @@ Function_Signature(Func &&) -> Function_Signature<
   
 struct GenericCallable
 {
-  template<bool Is_Noexcept, typename Func, typename ... Param, size_t ... Indexes>
-    constexpr static decltype(auto) my_invoke(Func &f, [[maybe_unused]] Array_View<Any::Any_Impl *> params, std::index_sequence<Indexes...>) noexcept(Is_Noexcept)
-    {
-      return (std::invoke(std::forward<Func>(f), cast<Param>(*params[Indexes])...));
-    };
-
-  struct Tag
-  {
-  };
-
-  // TODO extract out these bits into free functions for like "make_callable"
-  template<typename Func, bool Is_Noexcept, bool Is_MemberObject, bool Is_Object, typename Ret, typename ... Param>
-  GenericCallable(Func &&func, Function_Signature<Ret, Function_Params<Param...>, Is_Noexcept, Is_MemberObject, Is_Object>, Tag)
-    : caller (
-        [func = std::forward<Func>(func)](Array_View<Any::Any_Impl *> params) mutable noexcept(Is_Noexcept) {
-        return std::pair<bool, Any::Any_Impl_Detail<Ret>>{
-            true,
-            return_any<Ret>(my_invoke<Is_Noexcept, decltype(func), Param...>(func,  params, std::index_sequence_for<Param...>()))
-            };
-        }
-        )
-    {}
-
-  template<typename Func, typename Ret, typename Object, typename ... Param, bool Is_Noexcept>
-  GenericCallable(Func &&func, Function_Signature<Ret, Function_Params<Object, Param...>, Is_Noexcept, false, true>)
-    : GenericCallable(std::forward<Func>(func), Function_Signature<Ret, Function_Params<Param...>, Is_Noexcept, false, true>{}, Tag{})
-  {}
-
-  template<typename Func, typename Ret, typename ... Param, bool Is_Noexcept>
-  GenericCallable(Func &&func, Function_Signature<Ret, Function_Params<Param...>, Is_Noexcept, false, false> fs)
-    : GenericCallable(std::forward<Func>(func), fs, Tag{})
-  {}
-
-  template<typename Func, typename = std::enable_if_t<!std::is_same_v<std::decay_t<Func>, GenericCallable>>>
-  GenericCallable(Func &&f) 
-    : GenericCallable(std::forward<Func>(f), Function_Signature{f})
+  GenericCallable(std::function<Any (Array_View<Any::Any_Impl *>)> func)
+    : caller(std::move(func))
+      // todo do I need to specify noexcept here? how is it determined?
   {
   }
 
-  std::function<std::pair<bool, Any> (Array_View<Any::Any_Impl *>)> caller;
+  std::function<Any (Array_View<Any::Any_Impl *>)> caller;
+};
+
+template<bool Is_Noexcept, typename Func, typename ... Param, size_t ... Indexes>
+constexpr static decltype(auto) my_invoke(Func &f, [[maybe_unused]] Array_View<Any::Any_Impl *> params, std::index_sequence<Indexes...>) 
+  noexcept(Is_Noexcept)
+{
+  return (std::invoke(std::forward<Func>(f), cast<Param>(*params[Indexes])...));
 };
 
 
+template<typename Func, bool Is_Noexcept, bool Is_MemberObject, bool Is_Object, typename Ret, typename ... Param>
+auto make_callable_impl(Func &&func, Function_Signature<Ret, Function_Params<Param...>, Is_Noexcept, Is_MemberObject, Is_Object>)
+{
+  return [func = std::forward<Func>(func)](Array_View<Any::Any_Impl *> params) mutable noexcept(Is_Noexcept) {
+    if constexpr(std::is_same_v<Ret, void>) {
+      my_invoke<Is_Noexcept, decltype(func), Param...>(func,  params, std::index_sequence_for<Param...>());
+      return return_any_void();
+    } else {
+      return return_any<Ret>(my_invoke<Is_Noexcept, decltype(func), Param...>(func,  params, std::index_sequence_for<Param...>()));
+    }
+  };
+}
 
+// this version peels off the function object itself from the function signature, when used
+// on a callable object
+template<typename Func, typename Ret, typename Object, typename ... Param, bool Is_Noexcept>
+auto make_callable(Func &&func, Function_Signature<Ret, Function_Params<Object, Param...>, Is_Noexcept, false, true>)
+{
+  return make_callable_impl(std::forward<Func>(func), Function_Signature<Ret, Function_Params<Param...>, Is_Noexcept, false, true>{});
+} 
+
+template<typename Func, typename Ret, typename ... Param, bool Is_Noexcept>
+auto make_callable(Func &&func, Function_Signature<Ret, Function_Params<Param...>, Is_Noexcept, false, false> fs)
+{
+  return make_callable_impl(std::forward<Func>(func), fs);
+}
+
+template<typename Func>
+auto make_callable(Func &&func)
+{
+  return make_callable(std::forward<Func>(func), Function_Signature{func});
+}
 
 
 int my_func(int i, int j) noexcept
 {
   return i + j;
+}
+
+void my_func_2()
+{
 }
 
 struct Int
@@ -379,10 +410,12 @@ int main()
 //  script.dispatchers["lambda"].callables.emplace_back(&my_func);
 //  script.dispatchers["add"].callables.emplace_back([](double d, double d2) { return d + d2; });
 
-  GenericCallable callable4{&Int::val2};
-  GenericCallable callable3{&Int::val};
-  GenericCallable callable2{[]{return std::make_unique<int>(42); }};
-  GenericCallable callable{[](double d, double d2) noexcept { return d + d2; }};
+  GenericCallable callable4{make_callable(&Int::val2)};
+  GenericCallable callable3{make_callable(&Int::val)};
+  GenericCallable callable2{make_callable([]{return std::make_unique<int>(42); })};
+  GenericCallable callable{make_callable([](double d, double d2) noexcept { return d + d2; })};
+
+  auto func2 = make_callable(&my_func_2);
 
   int i=2;
   auto val = make_any(i);
@@ -401,7 +434,7 @@ int main()
 
   std::tuple t{make_any(1.6), make_any(2.8)};
   std::array<Any::Any_Impl *, 2> params{&std::get<0>(t), &std::get<1>(t)};
-  return cast<int>(callable.caller(Array_View{params}).second);
+  return cast<int>(callable.caller(Array_View{params}));
 //  std::cout << cast<int>(callable.caller(Array_View{params}).second) << '\n';
 
 //  std::array<Any, 2> params2{Int(2), 4};
