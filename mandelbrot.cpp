@@ -223,6 +223,7 @@ struct ImageBlock
   Point<std::size_t> upper_left;
   Point<std::size_t> end{upper_left.x + BlockWidth, upper_left.y + BlockHeight};
   std::array<Row, BlockHeight> image;
+  bool has_valid_data = false;
 
   static constexpr const auto size = Size<std::size_t>{BlockWidth, BlockHeight};
 };
@@ -245,9 +246,30 @@ void future_pixels(const Size<SizeType> &t_size, const Point<CenterType> &t_cent
             using Row = std::array<Color<double>, BlockWidth>;
             ImageBlock<BlockWidth, BlockHeight> image{p};
 
+            const auto macro_size = 8;
+
+            image.has_valid_data = false;
+
             for (const auto [x, y] : image.size.iterable(1,1)) {
-              if (canceling) { image.end = Point{x,y}; break; }
-              image.image[y][x] = get_color(Point{p.x + x, p.y + y}, t_center, t_size, t_scale, t_max_iteration, t_power, t_do_abs);
+              if (x % macro_size == 0 && y % macro_size == 0) {
+                if (canceling) { image.end = Point{x,y}; break; }
+                const auto color = get_color(Point{p.x + x, p.y + y}, t_center, t_size, t_scale, t_max_iteration, t_power, t_do_abs);
+                for (int sub_y = 0; sub_y < macro_size; ++sub_y) {
+                  for (int sub_x = 0; sub_x < macro_size; ++sub_x) {
+                    image.image[sub_y+y][sub_x+x] = color;
+                  }
+                }
+              }
+            }
+
+
+            if (!canceling) image.has_valid_data = true;
+
+            for (const auto [x, y] : image.size.iterable(1,1)) {
+              if (x % macro_size != 0 || y % macro_size != 0) {
+                if (canceling) { image.end = Point{x,y}; break; }
+                image.image[y][x] = get_color(Point{p.x + x, p.y + y}, t_center, t_size, t_scale, t_max_iteration, t_power, t_do_abs);
+              }
             }
 //            std::cout << "Completed " << p.x << ", " << p.y << '\n';
             return image;
@@ -266,12 +288,14 @@ std::pair<bool, bool> cull_pixels(Container &t_container, SetPixel &t_set_pixel)
         {
           auto result = f.get();
 
-          for (const auto &[x, y] : result.size.iterable(1,1)) {
-            const auto p = result.image[y][x];
-            t_set_pixel.set_pixel(
-                Point{result.upper_left.x + x, result.upper_left.y + y},
-                p 
-                );
+          if (result.has_valid_data) {
+            for (const auto &[x, y] : result.size.iterable(1,1)) {
+              const auto p = result.image[y][x];
+              t_set_pixel.set_pixel(
+                  Point{result.upper_left.x + x, result.upper_left.y + y},
+                  p 
+                  );
+            }
           }
           return true;
         } else {
