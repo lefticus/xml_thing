@@ -1,7 +1,6 @@
 #include <algorithm>
 #include <functional>
 
-
 template<typename Comparison, typename First, typename ... T>
 constexpr decltype(auto) variadic_compare(Comparison &&comparison, First && first, T && ... t)
 {
@@ -43,19 +42,15 @@ constexpr decltype(auto) variadic_min(T && ... t) noexcept(noexcept(variadic_com
   return variadic_compare(std::less<>{}, std::forward<T>(t)...);
 }
 
-
-struct Base
-{
+struct Base {
   int val = 0;
-  constexpr bool operator<(const Base &other) const noexcept
-  {
+  constexpr bool operator<(const Base &other) const noexcept {
     return val < other.val;
   }
 };
 
 struct Derived : Base
 {
-
 };
 
 int main()

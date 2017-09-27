@@ -51,10 +51,13 @@ struct Any
 {
   struct Any_Impl
   {
-    virtual void *data() = 0;
-    virtual const void *c_data() = 0;
-    virtual volatile void *v_data() = 0;
-    virtual const volatile void *cv_data() = 0;
+    virtual const void *c_data() noexcept = 0;
+    virtual void *data() noexcept = 0;
+    virtual volatile void *v_data() noexcept = 0;
+    virtual const volatile void *cv_data() noexcept = 0;
+
+    Any_Impl() = default;
+
     Any_Impl(Any_Impl &&) = delete;
     Any_Impl(const Any_Impl &) = delete;
   };
@@ -62,7 +65,19 @@ struct Any
   template<typename T>
   struct Any_Impl_Detail : Any_Impl
   {
-    constexpr const void *c_data() noexcept final {
+    Any_Impl_Detail(const T &t)
+      noexcept(std::is_nothrow_copy_constructible_v<T>)
+      : m_data(t)
+    {
+    }
+
+    Any_Impl_Detail(T &&t)
+      noexcept(std::is_nothrow_move_constructible_v<T>)
+      : m_data(std::move(t))
+    {
+    }
+
+    const void *c_data() noexcept final {
       if constexpr(std::is_volatile_v<T>) {
         return nullptr;
       } else {
@@ -70,7 +85,7 @@ struct Any
       }
     }
 
-    constexpr void *data() noexcept final {
+    void *data() noexcept final {
       if constexpr (std::is_const_v<T> || std::is_volatile_v<T>) {
         return nullptr;
       } else {
@@ -78,7 +93,7 @@ struct Any
       }
     }
 
-    constexpr volatile void *v_data() noexcept final {
+    volatile void *v_data() noexcept final {
       if constexpr (std::is_const_v<T>) {
         return nullptr;
       } else {
@@ -86,19 +101,13 @@ struct Any
       }
     }
 
-    constexpr const volatile void *cv_data() noexcept final {
+    const volatile void *cv_data() noexcept final {
       return &m_data;
     }
 
-    constexpr Any_Impl_Detail(const T &t)
-      noexcept(std::is_nothrow_copy_constructible_v<T>)
-      : m_data(t)
-    {
-    }
 
-    constexpr Any_Impl_Detail(T &&t)
-      noexcept(std::is_nothrow_move_constructible_v<T>)
-      : m_data(std::move(t))
+    constexpr Any_Impl_Detail(T &t) noexcept
+      : m_data(t)
     {
     }
 
@@ -108,7 +117,7 @@ struct Any
   template<typename T>
   struct Any_Impl_Detail<T &> : Any_Impl
   {
-    constexpr const void *c_data() noexcept final {
+    const void *c_data() noexcept final {
       if constexpr(std::is_volatile_v<T>) {
         return nullptr;
       } else {
@@ -116,7 +125,7 @@ struct Any
       }
     }
 
-    constexpr void *data() noexcept final {
+    void *data() noexcept final {
       if constexpr (std::is_const_v<T> || std::is_volatile_v<T>) {
         return nullptr;
       } else {
@@ -124,7 +133,7 @@ struct Any
       }
     }
 
-    constexpr volatile void *v_data() noexcept final {
+    volatile void *v_data() noexcept final {
       if constexpr (std::is_const_v<T>) {
         return nullptr;
       } else {
@@ -132,7 +141,7 @@ struct Any
       }
     }
 
-    constexpr const volatile void *cv_data() noexcept final {
+    const volatile void *cv_data() noexcept final {
       return &m_data;
     }
 
@@ -159,19 +168,19 @@ struct Any
 template<>
 struct Any::Any_Impl_Detail<void> : Any_Impl
 {
-  constexpr const void *c_data() noexcept final {
+  const void *c_data() noexcept final {
     return nullptr;
   }
 
-  constexpr void *data() noexcept final {
+  void *data() noexcept final {
     return nullptr;
   }
 
-  constexpr volatile void *v_data() noexcept final {
+  volatile void *v_data() noexcept final {
     return nullptr;
   }
 
-  constexpr const volatile void *cv_data() noexcept final {
+  const volatile void *cv_data() noexcept final {
     return nullptr;
   };
 
@@ -352,8 +361,9 @@ Function_Signature(Func &&) -> Function_Signature<
   
 struct GenericCallable
 {
-  GenericCallable(std::function<Any (Array_View<Any::Any_Impl *>)> func)
-    : caller(std::move(func))
+  template<typename Func>
+  GenericCallable(Func &&func)
+//    : caller(std::move(func))
       // todo do I need to specify noexcept here? how is it determined?
   {
   }
@@ -387,7 +397,17 @@ auto make_callable_impl(Func &&func, Function_Signature<Ret, Function_Params<Par
 template<typename Func, typename Ret, typename Object, typename ... Param, bool Is_Noexcept>
 auto make_callable(Func &&func, Function_Signature<Ret, Function_Params<Object, Param...>, Is_Noexcept, false, true>)
 {
-  return make_callable_impl(std::forward<Func>(func), Function_Signature<Ret, Function_Params<Param...>, Is_Noexcept, false, true>{});
+  using functionptr = Ret (*)(Param...);
+  using noexceptfunctionptr = Ret (*)(Param...) noexcept;
+
+  // see if this is convertible to a raw function pointer of the same types. If so, drop the object and use that.
+//  if constexpr(std::is_convertible_v<Func, functionptr>) {
+//    return make_callable_impl(static_cast<functionptr>(func), Function_Signature<Ret, Function_Params<Param...>, Is_Noexcept, false, false>{});
+//  } else if constexpr(std::is_convertible_v<Func, noexceptfunctionptr>) {
+//    return make_callable_impl(static_cast<noexceptfunctionptr>(func), Function_Signature<Ret, Function_Params<Param...>, Is_Noexcept, false, false>{});
+//  } else {
+    return make_callable_impl(std::forward<Func>(func), Function_Signature<Ret, Function_Params<Param...>, Is_Noexcept, false, true>{});
+//  }
 } 
 
 template<typename Func, typename Ret, typename ... Param, bool Is_Noexcept>
@@ -477,9 +497,11 @@ int main()
 
   //return std::invoke([](double d, double d2) { return d + d2;}, 5.2, 6.4);
 
-  std::tuple t{make_any(1.6), make_any(2.8)};
-  std::array<Any::Any_Impl *, 2> params{&std::get<0>(t), &std::get<1>(t)};
-  return cast<int>(callable.caller(Array_View{params}));
+  auto a = make_any(2.8);
+  std::tuple t{ std::move(a) };
+//  auto t = std::make_tuple(make_any(1.6), make_any(2.8));
+ // std::array<Any::Any_Impl *, 2> params{&std::get<0>(t), &std::get<1>(t)};
+ // return cast<int>(callable.caller(Array_View{params}));
 //  std::cout << cast<int>(callable.caller(Array_View{params}).second) << '\n';
 
 //  std::array<Any, 2> params2{Int(2), 4};
