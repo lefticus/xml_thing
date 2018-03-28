@@ -2,11 +2,17 @@
 #include <tuple>
 #include <algorithm>
 #include <iterator>
-
+#include <cassert>
+#include <iostream>
 
 template<typename Type, typename CRTP> struct Strongly_Typed
 {
   constexpr explicit Strongly_Typed(const Type val) noexcept : m_val(val) {}
+
+  constexpr auto data() const noexcept
+  {
+    return m_val;
+  }
 
   constexpr auto operator&(const Type rhs) const noexcept { return m_val & rhs; }
 
@@ -68,6 +74,46 @@ struct Instruction : Strongly_Typed<std::uint32_t, Instruction>
   [[nodiscard]] constexpr Condition get_condition() const noexcept { return static_cast<Condition>(0b1111 & (m_val >> 28)); }
 
   friend struct Data_Processing;
+  friend struct Single_Data_Transfer;
+  friend struct Multiply_Long;
+};
+
+struct Single_Data_Transfer : Strongly_Typed<std::uint32_t, Single_Data_Transfer>
+{
+  constexpr Single_Data_Transfer(Instruction ins) noexcept
+    : Strongly_Typed{ ins.m_val } {}
+
+
+  [[nodiscard]] constexpr bool immediate_offset() const noexcept { return !bit_set(25); }
+
+  [[nodiscard]] constexpr bool pre_indexing() const noexcept { return bit_set(24); }
+  [[nodiscard]] constexpr bool up_indexing() const noexcept { return bit_set(23); }
+  [[nodiscard]] constexpr bool byte_transfer() const noexcept { return bit_set(22); }
+  [[nodiscard]] constexpr bool write_back() const noexcept { return bit_set(21); }
+  [[nodiscard]] constexpr bool load() const noexcept { return bit_set(20); }
+
+  [[nodiscard]] constexpr auto base_register() const noexcept { return (m_val >> 16) & 0b1111; }
+  [[nodiscard]] constexpr auto src_dest_register() const noexcept { return (m_val >> 12) & 0b1111; }
+  [[nodiscard]] constexpr auto offset() const noexcept { return m_val & 0xFFF; }
+  [[nodiscard]] constexpr auto offset_register() const noexcept { return offset() & 0b1111; }
+  [[nodiscard]] constexpr auto offset_shift() const noexcept { return offset() >> 4; }
+  [[nodiscard]] constexpr auto offset_shift_type() const noexcept { return static_cast<Shift_Type>((offset_shift() >> 1) & 0b11); }
+  [[nodiscard]] constexpr auto offset_shift_amount() const noexcept { return offset_shift() >> 4; }
+};
+
+struct Multiply_Long : Strongly_Typed<std::uint32_t, Multiply_Long>
+{
+  constexpr Multiply_Long(Instruction ins) noexcept
+    : Strongly_Typed{ ins.m_val } {}
+
+
+  [[nodiscard]] constexpr bool unsigned_mul() const noexcept { return !bit_set(22); }
+  [[nodiscard]] constexpr bool accumulate() const noexcept { return !bit_set(21); }
+  [[nodiscard]] constexpr bool status_register_update() const noexcept { return !bit_set(20); }
+  [[nodiscard]] constexpr auto high_result() const noexcept { return (m_val >> 16) & 0b1111; }
+  [[nodiscard]] constexpr auto low_result() const noexcept { return (m_val >> 12) & 0b1111; }
+  [[nodiscard]] constexpr auto operand_1() const noexcept { return (m_val >> 8) & 0b1111; }
+
 };
 
 struct Data_Processing : Strongly_Typed<std::uint32_t, Data_Processing>
@@ -75,21 +121,18 @@ struct Data_Processing : Strongly_Typed<std::uint32_t, Data_Processing>
   constexpr Data_Processing(Instruction ins) noexcept
     : Strongly_Typed{ ins.m_val } {}
 
-        [[nodiscard]] constexpr OpCode get_opcode() const noexcept
+  [[nodiscard]] constexpr OpCode get_opcode() const noexcept
   {
     return static_cast<OpCode>(0b1111 & (m_val >> 21));
   }
 
   [[nodiscard]] constexpr auto operand_2() const noexcept { return 0b1111'1111'1111 & m_val; }
-
   [[nodiscard]] constexpr auto operand_2_register() const noexcept { return 0b1111 & m_val; }
 
   [[nodiscard]] constexpr bool operand_2_immediate_shift() const noexcept { return !bit_set(4); }
 
   [[nodiscard]] constexpr auto operand_2_shift_register() const noexcept { return operand_2() >> 8; }
-
   [[nodiscard]] constexpr auto operand_2_shift_amount() const noexcept { return operand_2() >> 7; }
-
   [[nodiscard]] constexpr auto operand_2_shift_type() const noexcept { return static_cast<Shift_Type>((operand_2() >> 5) & 0b11); }
 
   [[nodiscard]] constexpr auto operand_2_immediate() const noexcept
@@ -123,21 +166,21 @@ struct Data_Processing : Strongly_Typed<std::uint32_t, Data_Processing>
 
 
 enum class Instruction_Type {
-  Branch_Exchange,
-  Swap,
   Data_Processing,
+  MRS,
+  MSR,
+  MSRF,
   Multiply,
-  Long_Multiply,
-  Load_Store_Byte_Word,
-  Load_Store_Multiple,
-  Half_Word_Transfer_Immediate_Offset,
-  Half_Word_Transfer_Register_Offset,
+  Multiply_Long,
+  Single_Data_Swap,
+  Single_Data_Transfer,
+  Undefined,
+  Block_Data_Transfer,
   Branch,
   Coprocessor_Data_Transfer,
   Coprocessor_Data_Operation,
   Coprocessor_Register_Transfer,
-  Software_Interrupt,
-  Unhandled_Opcode
+  Software_Interrupt
 };
 
 
@@ -157,7 +200,7 @@ enum class Instruction_Type {
   // hack for lack of constexpr swap
   constexpr const auto swap_tuples = [](auto &lhs, auto &rhs) noexcept
   {
-    auto old         = lhs;
+    auto old = lhs;
 
     std::get<0>(lhs) = std::get<0>(rhs);
     std::get<1>(lhs) = std::get<1>(rhs);
@@ -168,17 +211,19 @@ enum class Instruction_Type {
     std::get<2>(rhs) = std::get<2>(old);
   };
 
-  std::array<std::tuple<std::uint32_t, std::uint32_t, Instruction_Type>, 14> table{
+  // ARMv3  http://netwinder.osuosl.org/pub/netwinder/docs/arm/ARM7500FEvB_3.pdf
+  std::array<std::tuple<std::uint32_t, std::uint32_t, Instruction_Type>, 15> table{
     { { 0b0000'1100'0000'0000'0000'0000'0000'0000, 0b0000'0000'0000'0000'0000'0000'0000'0000, Instruction_Type::Data_Processing },
+      { 0b0000'1111'1011'1111'0000'1111'1111'1111, 0b0000'0001'0000'1111'0000'1111'1111'1111, Instruction_Type::MRS },
+      { 0b0000'1111'1011'1111'1111'1111'1111'0000, 0b0000'0001'0010'1001'1111'0000'0000'0000, Instruction_Type::MSR },
+      { 0b0000'1101'1011'1111'1111'0000'0000'0000, 0b0000'0001'0010'1000'1111'0000'0000'0000, Instruction_Type::MSRF },
       { 0b0000'1111'1100'0000'0000'0000'1111'0000, 0b0000'0000'0000'0000'0000'0000'1001'0000, Instruction_Type::Multiply },
-      { 0b0000'1111'1000'0000'0000'0000'1111'0000, 0b0000'0000'1000'0000'0000'0000'1001'0000, Instruction_Type::Long_Multiply },
-      { 0b0000'1111'1011'0000'0000'1111'1111'0000, 0b0000'0001'0000'0000'0000'0000'1001'0000, Instruction_Type::Swap },
-      { 0b0000'1100'0000'0000'0000'0000'0000'0000, 0b0000'0100'0000'0000'0000'0000'0000'0000, Instruction_Type::Load_Store_Byte_Word },
-      { 0b0000'1110'0000'0000'0000'0000'0000'0000, 0b0000'1000'0000'0000'0000'0000'0000'0000, Instruction_Type::Load_Store_Multiple },
-      { 0b0000'1110'0100'0000'0000'0000'1001'0000, 0b0000'0100'0000'0000'0000'0000'1001'0000, Instruction_Type::Half_Word_Transfer_Immediate_Offset },
-      { 0b0000'1110'0100'0000'0000'1111'1001'0000, 0b0000'0000'0000'0000'0000'0000'1001'0000, Instruction_Type::Half_Word_Transfer_Register_Offset },
+      { 0b0000'1111'1000'0000'0000'0000'1111'0000, 0b0000'0000'1000'0000'0000'0000'1001'0000, Instruction_Type::Multiply_Long },
+      { 0b0000'1111'1011'0000'0000'1111'1111'0000, 0b0000'0001'0000'0000'0000'0000'1001'0000, Instruction_Type::Single_Data_Swap },
+      { 0b0000'1100'0000'0000'0000'0000'0000'0000, 0b0000'0100'0000'0000'0000'0000'0000'0000, Instruction_Type::Single_Data_Transfer },
+      { 0b0000'1110'0000'0000'0000'0000'0001'0000, 0b0000'0110'0000'0000'0000'0000'0001'0000, Instruction_Type::Undefined },
+      { 0b0000'1110'0000'0000'0000'0000'0000'0000, 0b0000'1110'0000'0000'0000'0000'0000'0000, Instruction_Type::Block_Data_Transfer },
       { 0b0000'1110'0000'0000'0000'0000'0000'0000, 0b0000'1010'0000'0000'0000'0000'0000'0000, Instruction_Type::Branch },
-      { 0b0000'1111'1111'1111'1111'1111'1111'0000, 0b0000'0001'0010'1111'1111'1111'0001'0000, Instruction_Type::Branch_Exchange },
       { 0b0000'1110'0000'0000'0000'0000'1111'0000, 0b0000'1100'0010'0000'0000'0000'0000'0000, Instruction_Type::Coprocessor_Data_Transfer },
       { 0b0000'1111'0000'0000'0000'0000'0001'0000, 0b0000'1110'0000'0000'0000'0000'0000'0000, Instruction_Type::Coprocessor_Data_Operation },
       { 0b0000'1111'0000'0000'0000'0000'0001'0000, 0b0000'1110'0000'0000'0000'0000'0001'0000, Instruction_Type::Coprocessor_Register_Transfer },
@@ -195,19 +240,52 @@ enum class Instruction_Type {
 }
 
 
-struct System
+template<std::size_t RAMSize = 1024> struct System
 {
   std::uint32_t CSPR{};
 
   std::array<std::uint32_t, 16> registers{};
+  std::array<std::uint8_t, RAMSize> RAM{};
 
   [[nodiscard]] constexpr auto &PC() noexcept { return registers[15]; }
   [[nodiscard]] constexpr const auto &PC() const noexcept { return registers[15]; }
 
-  constexpr void branch_exchange(const Instruction) noexcept;
-  constexpr void swap(const Instruction) noexcept;
+  System() = default;
 
-  constexpr auto get_second_operand_shift_amount(const Data_Processing val) const noexcept
+  template<std::size_t Size>
+  constexpr System(const std::array<std::uint8_t, Size> &memory) noexcept
+  {
+    static_assert(Size <= RAMSize);
+
+    // Workaround for missing constexpr copy (added in C++20, not in compilers yet)
+    for (std::size_t loc = 0; loc < Size; ++loc) {
+      RAM[loc] = memory[loc];
+    }
+  }
+
+  constexpr Instruction get_instruction(const std::uint32_t PC) noexcept {
+    // Note: there are more efficient ways to do this with reinterepet_cast
+    // or an intrinsic, but I cannot with constexpr context and I see
+    // no compiler that can optimize around this implementation
+    const std::uint32_t byte_1 = RAM[PC];
+    const std::uint32_t byte_2 = RAM[PC+1];
+    const std::uint32_t byte_3 = RAM[PC+2];
+    const std::uint32_t byte_4 = RAM[PC+3];
+
+    return Instruction{byte_1 | (byte_2 << 8) | (byte_3 << 16) | (byte_4 << 24)};
+  }
+
+  constexpr void run(const std::uint32_t loc) noexcept
+  {
+    registers[14] = RAMSize;
+
+    PC() = loc;
+    while (PC() != RAMSize) {
+      process(get_instruction(PC()));
+    }
+  }
+
+  [[nodiscard]] constexpr auto get_second_operand_shift_amount(const Data_Processing val) const noexcept
   {
     if (val.operand_2_immediate_shift()) {
       return val.operand_2_shift_amount();
@@ -256,6 +334,55 @@ struct System
     } else {
       const auto shift_amount = get_second_operand_shift_amount(val);
       return shift_register(c_flag(), val.operand_2_shift_type(), shift_amount, registers[val.operand_2_register()]);
+    }
+  }
+
+  constexpr auto offset(const Single_Data_Transfer val) const noexcept {
+    const auto offset = [=]() -> std::int32_t {
+      if (val.immediate_offset()) {
+        return val.offset();
+      } else {
+        const auto offset_register = registers[val.offset_register()];
+        // note: carry out seems to have no use with Single_Data_Transfer
+        return shift_register(c_flag(), val.offset_shift_type(), val.offset_shift_amount(), offset_register).second;
+      }
+    }();
+
+    if (val.up_indexing()) {
+      return offset;
+    } else {
+      return -offset;
+    }
+  }
+
+  constexpr void single_data_transfer(const Single_Data_Transfer val) noexcept {
+    const std::int32_t index_offset = offset(val);
+    const auto base_location = registers[val.base_register()];
+    const bool pre_indexed = val.pre_indexing();
+
+    const auto src_dest_register = val.src_dest_register();
+    const auto indexed_location = base_location + index_offset;
+
+    if (val.byte_transfer()) {
+      if (const auto location = pre_indexed ? indexed_location : base_location; val.load()) {
+        registers[src_dest_register] = RAM[location];
+      } else {
+        RAM[location] = registers[src_dest_register];
+      }
+    } else {
+      // word transfer
+      if (const auto location = pre_indexed ? indexed_location : base_location; val.load()) {
+        registers[src_dest_register] = RAM[location] | (RAM[location + 1] << 8) | (RAM[location + 1] << 16) | (RAM[location + 1] << 24);
+      } else {
+        RAM[location] = registers[src_dest_register] & 0xFF;
+        RAM[location+1] = (registers[src_dest_register] >> 8) & 0xFF;
+        RAM[location+2] = (registers[src_dest_register] >> 16) & 0xFF;
+        RAM[location+3] = (registers[src_dest_register] >> 24) & 0xFF;
+      }
+    }
+
+    if (!pre_indexed || val.write_back()) {
+      registers[val.base_register()] = indexed_location;
     }
   }
 
@@ -330,13 +457,6 @@ struct System
     }
   }
 
-  constexpr void multiply(const Instruction) noexcept;
-  constexpr void long_multiply(const Instruction) noexcept;
-  constexpr void load_store_byte_word(const Instruction) noexcept;
-  constexpr void load_store_multiple(const Instruction) noexcept;
-  constexpr void half_word_transfer_immediate_offset(const Instruction) noexcept;
-  constexpr void half_word_transfer_register_offset(const Instruction) noexcept;
-
   constexpr void branch(const Instruction instruction) noexcept
   {
     if (instruction.bit_set(24)) {
@@ -356,10 +476,6 @@ struct System
 
     PC() += offset + 4;
   }
-  constexpr void coprocessor_data_transfer(const Instruction) noexcept;
-  constexpr void coprocessor_data_operation(const Instruction) noexcept;
-  constexpr void coprocessor_register_transfer(const Instruction) noexcept;
-  constexpr void software_interrupt(const Instruction) noexcept;
 
   constexpr static auto n_bit = 0b1000'0000'0000'0000'0000'0000'0000'0000;
   constexpr static auto z_bit = 0b0100'0000'0000'0000'0000'0000'0000'0000;
@@ -437,7 +553,7 @@ struct System
       }
     }
 
-    return Instruction_Type::Unhandled_Opcode;
+    return Instruction_Type::Undefined;
   }
 
   constexpr void process(const Instruction instruction) noexcept
@@ -446,20 +562,20 @@ struct System
     if (check_condition(instruction)) {
       switch (decode(instruction)) {
       case Instruction_Type::Data_Processing: data_processing(instruction); break;
-      case Instruction_Type::Multiply: multiply(instruction); break;
-      case Instruction_Type::Long_Multiply: long_multiply(instruction); break;
-      case Instruction_Type::Swap: swap(instruction); break;
-      case Instruction_Type::Load_Store_Byte_Word: load_store_byte_word(instruction); break;
-      case Instruction_Type::Load_Store_Multiple: load_store_multiple(instruction); break;
-      case Instruction_Type::Half_Word_Transfer_Immediate_Offset: half_word_transfer_immediate_offset(instruction); break;
-      case Instruction_Type::Half_Word_Transfer_Register_Offset: half_word_transfer_register_offset(instruction); break;
+      case Instruction_Type::MRS: assert(!"MRS Not Implemented"); break;
+      case Instruction_Type::MSR: assert(!"MSR Not Implemented"); break;
+      case Instruction_Type::MSRF: assert(!"MSR flags Not Implemented"); break;
+      case Instruction_Type::Multiply: assert(!"Multiply Not Implemented"); break;
+      case Instruction_Type::Multiply_Long: assert(!"Multiply_Long Not Implemented"); /* multiply_long(instruction); */ break;
+      case Instruction_Type::Single_Data_Swap: assert(!"Single_Data_Swap Not Implemented"); break;
+      case Instruction_Type::Single_Data_Transfer: single_data_transfer(instruction); break;
+      case Instruction_Type::Undefined: assert(!"Undefined Opcode"); break;
+      case Instruction_Type::Block_Data_Transfer: assert(!"Block_Data_Transfer Not Implemented"); break;
       case Instruction_Type::Branch: branch(instruction); break;
-      case Instruction_Type::Branch_Exchange: branch_exchange(instruction); break;
-      case Instruction_Type::Coprocessor_Data_Transfer: coprocessor_data_transfer(instruction); break;
-      case Instruction_Type::Coprocessor_Data_Operation: coprocessor_data_operation(instruction); break;
-      case Instruction_Type::Coprocessor_Register_Transfer: coprocessor_register_transfer(instruction); break;
-      case Instruction_Type::Software_Interrupt: software_interrupt(instruction); break;
-      case Instruction_Type::Unhandled_Opcode: break;
+      case Instruction_Type::Coprocessor_Data_Transfer: assert(!"Coprocessor_Data_Transfer Not Implemented"); break;
+      case Instruction_Type::Coprocessor_Data_Operation: assert(!"Coprocessor_Data_Operation Not Implemented"); break;
+      case Instruction_Type::Coprocessor_Register_Transfer: assert(!"Coprocessor_Register_Transfer Not Implemented"); break;
+      case Instruction_Type::Software_Interrupt: assert(!"Software_Interrupt Not Implemented"); break;
       }
     }
   }
@@ -472,50 +588,139 @@ template<typename... T> constexpr auto run_instruction(T... instruction)
   return system;
 }
 
+template<typename ... T> constexpr auto run_code(std::uint32_t start, T ... byte)
+{
+  std::array<std::uint8_t, sizeof...(T)> memory{static_cast<std::uint8_t>(byte)...};
+  System system{memory};
+  system.run(start);
+  return system;
+}
 
-constexpr auto systest1 = run_instruction(Instruction{ 0b1111'1010'0000'0000'0000'0000'0000'1111 });
-static_assert(systest1.PC() == 4);
+void test_never_executing_jump()
+{
+  constexpr auto systest1 = run_instruction(Instruction{ 0b1111'1010'0000'0000'0000'0000'0000'1111 });
+  static_assert(systest1.PC() == 4);
+}
 
-constexpr auto systest2 = run_instruction(Instruction{ 0b1110'1010'0000'0000'0000'0000'0000'1111 });
-static_assert(systest2.PC() == 68);
-static_assert(systest2.registers[14] == 0);
+void test_always_executing_jump()
+{
+  constexpr auto systest2 = run_instruction(Instruction{ 0b1110'1010'0000'0000'0000'0000'0000'1111 });
+  static_assert(systest2.PC() == 68);
+  static_assert(systest2.registers[14] == 0);
+}
 
-constexpr auto systest3 = run_instruction(Instruction{ 0b1110'1011'0000'0000'0000'0000'0000'1111 });
-static_assert(systest3.PC() == 68);
-static_assert(systest3.registers[14] == 4);
+void test_always_executing_jump_with_saved_return()
+{
+  constexpr auto systest3 = run_instruction(Instruction{ 0b1110'1011'0000'0000'0000'0000'0000'1111 });
+  static_assert(systest3.PC() == 68);
+  static_assert(systest3.registers[14] == 4);
+}
 
-constexpr auto systest4 = run_instruction(Instruction{ 0xe2800055 });  // add r0, r0, #85
-static_assert(systest4.registers[0] == 0x55);
+void test_add_of_register()
+{
+  constexpr auto systest4 = run_instruction(Instruction{ 0xe2800055 });  // add r0, r0, #85
+  static_assert(systest4.registers[0] == 0x55);
+}
 
-constexpr auto systest5 = run_instruction(Instruction{ 0xe2800055 },  // add r0, r0, #85
-                                          Instruction{ 0xe2800c7e }   // add r0, r0, #32256
-);
-static_assert(systest5.registers[0] == (85 + 32256));
-
-
-constexpr auto systest6 = run_instruction(Instruction{ 0xe2800001 },  // add r0, r0, #1
-                                          Instruction{ 0xe2811009 },  // add r1, r1, #9
-                                          Instruction{ 0xe2822002 },  // add r2, r2, #2
-                                          Instruction{ 0xe0423001 }   // sub r3, r2, r1
-);
-static_assert(systest6.registers[3] == static_cast<std::uint32_t>(2 - 9));
-
-
-constexpr auto systest7 = run_instruction(Instruction{ 0xe2800001 },  // add r0, r0, #1
-                                          Instruction{ 0xe2811009 },  // add r1, r1, #9
-                                          Instruction{ 0xe2822002 },  // add r2, r2, #2
-                                          Instruction{ 0xe0403231 }   // sub r3, r0, r1, lsr r2
-                                                                      // logical right shift r1 by the number in bottom byte of r2
-                                                                      // subtract result from r0 and put answer in r3
-);
-
-static_assert(systest7.registers[3] == static_cast<std::uint32_t>(1 - (9 >> 2)));
+void test_add_of_register_with_shifts()
+{
+  constexpr auto systest5 = run_instruction(Instruction{ 0xe2800055 },  // add r0, r0, #85
+                                            Instruction{ 0xe2800c7e }   // add r0, r0, #32256
+  );
+  static_assert(systest5.registers[0] == (85 + 32256));
+}
 
 
-static_assert(Instruction{ 0b1110'1010'0000'0000'0000'0000'0000'1111 }.get_condition() == Condition::AL);
+void test_multiple_adds_and_sub()
+{
+  constexpr auto systest6 = run_instruction(Instruction{ 0xe2800001 },  // add r0, r0, #1
+                                            Instruction{ 0xe2811009 },  // add r1, r1, #9
+                                            Instruction{ 0xe2822002 },  // add r2, r2, #2
+                                            Instruction{ 0xe0423001 }   // sub r3, r2, r1
+  );
+  static_assert(systest6.registers[3] == static_cast<std::uint32_t>(2 - 9));
+}
+
+void test_memory_writes()
+{
+  constexpr auto systest6 = run_instruction(Instruction{ 0xe3a00064 },  // mov r0, #100 ; 0x64
+                                            Instruction{ 0xe3a01005 },  // mov r1, #5
+                                            Instruction{ 0xe5c01000 },  // strb r1, [r0]
+                                            Instruction{ 0xe3a00000 },  // mov r0, #0
+                                            Instruction{ 0xe1a0f00e }   // mov pc, lr
+  );
+
+  static_assert(systest6.RAM[100] == 5);
+}
+
+void test_sub_with_shift()
+{
+  constexpr auto systest7 = run_instruction(Instruction{ 0xe2800001 },  // add r0, r0, #1
+                                            Instruction{ 0xe2811009 },  // add r1, r1, #9
+                                            Instruction{ 0xe2822002 },  // add r2, r2, #2
+                                            Instruction{ 0xe0403231 }   // sub r3, r0, r1, lsr r2
+                                                                        // logical right shift r1 by the number in bottom byte of r2
+                                                                        // subtract result from r0 and put answer in r3
+  );
+
+  static_assert(systest7.registers[3] == static_cast<std::uint32_t>(1 - (9 >> 2)));
+}
+
+void test_looping()
+{
+  /*
+  #include <cstdint>
+
+  template<typename T>
+    volatile T& get_loc(const std::uint32_t loc)
+    {
+      return *reinterpret_cast<T*>(loc);
+    }
+
+  int main()
+  {
+    for (int i = 0; i < 100; ++i) {
+      get_loc<std::int8_t>(100+i) = i%5;
+    }
+  }
+  */
+
+  // compiles to:
+
+  /*
+  00000000 <main>:
+   0:	e59f102c 	ldr	r1, [pc, #44]	; 34 <main+0x34>
+   4:	e3a00000 	mov	r0, #0
+   8:	e0832190 	umull	r2, r3, r0, r1
+   c:	e1a02123 	lsr	r2, r3, #2
+  10:	e0822102 	add	r2, r2, r2, lsl #2
+  14:	e2622000 	rsb	r2, r2, #0
+  18:	e0802002 	add	r2, r0, r2
+  1c:	e5c02064 	strb	r2, [r0, #100]	; 0x64
+  20:	e2800001 	add	r0, r0, #1
+  24:	e3500064 	cmp	r0, #100	; 0x64
+  28:	1afffff6 	bne	8 <main+0x8>
+  2c:	e3a00000 	mov	r0, #0
+  30:	e1a0f00e 	mov	pc, lr
+  34:	cccccccd 	.word	0xcccccccd
+  */
+
+  constexpr auto system = run_code(0,
+    0x2c, 0x10, 0x9f, 0xe5, 0x00, 0x00, 0xa0, 0xe3, 0x90, 0x21, 0x83, 0xe0, 0x23, 0x21, 0xa0, 0xe1, 0x02, 0x21, 0x82, 0xe0, 0x00, 0x20, 0x62, 0xe2, 0x02, 0x20, 0x80, 0xe0, 0x64, 0x20, 0xc0, 0xe5, 0x01, 0x00, 0x80, 0xe2, 0x64, 0x00, 0x50, 0xe3, 0xf6, 0xff, 0xff, 0x1a, 0x00, 0x00, 0xa0, 0xe3, 0x0e, 0xf0, 0xa0, 0xe1, 0xcd, 0xcc, 0xcc, 0xcc);
+  static_assert(system.RAM[100] == 5);
+  static_assert(system.RAM[104] == 5);
+  static_assert(system.RAM[105] == 0);
+  static_assert(system.RAM[106] == 1);
+}
+
+
+void test_condition_parsing() { static_assert(Instruction{ 0b1110'1010'0000'0000'0000'0000'0000'1111 }.get_condition() == Condition::AL); }
 
 int main(int argc, const char *[])
 {
-  System s;
-  s.process(Instruction{ static_cast<std::uint32_t>(argc) });
+//  System s;
+//  s.process(Instruction{ static_cast<std::uint32_t>(argc) });
+
+  test_looping();
 }
+
