@@ -113,6 +113,7 @@ struct Multiply_Long : Strongly_Typed<std::uint32_t, Multiply_Long>
   [[nodiscard]] constexpr auto high_result() const noexcept { return (m_val >> 16) & 0b1111; }
   [[nodiscard]] constexpr auto low_result() const noexcept { return (m_val >> 12) & 0b1111; }
   [[nodiscard]] constexpr auto operand_1() const noexcept { return (m_val >> 8) & 0b1111; }
+  [[nodiscard]] constexpr auto operand_2() const noexcept { return m_val & 0b1111; }
 
 };
 
@@ -280,7 +281,13 @@ template<std::size_t RAMSize = 1024> struct System
     registers[14] = RAMSize;
 
     PC() = loc;
-    while (PC() != RAMSize) {
+    while (PC() < RAMSize) {
+      std::cout << std::hex << PC() << ':';
+      for (const auto r : registers) {
+        std::cout << ' ' << r;
+      }
+      std::cout << '\n';
+
       process(get_instruction(PC()));
     }
   }
@@ -372,7 +379,7 @@ template<std::size_t RAMSize = 1024> struct System
     } else {
       // word transfer
       if (const auto location = pre_indexed ? indexed_location : base_location; val.load()) {
-        registers[src_dest_register] = RAM[location] | (RAM[location + 1] << 8) | (RAM[location + 1] << 16) | (RAM[location + 1] << 24);
+        registers[src_dest_register] = static_cast<std::uint32_t>(RAM[location]) | (static_cast<std::uint32_t>(RAM[location + 1]) << 8) | (static_cast<std::uint32_t>(RAM[location + 2]) << 16) | (static_cast<std::uint32_t>(RAM[location + 3]) << 24);
       } else {
         RAM[location] = registers[src_dest_register] & 0xFF;
         RAM[location+1] = (registers[src_dest_register] >> 8) & 0xFF;
@@ -477,6 +484,30 @@ template<std::size_t RAMSize = 1024> struct System
     PC() += offset + 4;
   }
 
+  constexpr void multiply_long(const Multiply_Long val) noexcept
+  {
+    const auto result = [val, lhs = registers[val.operand_1()], rhs = registers[val.operand_2()]]() -> std::uint64_t {
+      if (val.unsigned_mul()) {
+        return static_cast<std::uint64_t>(lhs) * static_cast<std::uint64_t>(lhs);
+      } else {
+        return static_cast<std::uint64_t>(static_cast<std::int64_t>(lhs) * static_cast<std::int64_t>(lhs));
+      }
+    }(); 
+
+    if (val.accumulate()) {
+      registers[val.high_result()] += (result >> 32) & 0xFFFFFFFF;
+      registers[val.low_result()] += 0xFFFFFFFF;
+    } else {
+      registers[val.high_result()] = (result >> 32) & 0xFFFFFFFF;
+      registers[val.low_result()] = 0xFFFFFFFF;
+    }
+
+    if (val.status_register_update()) {
+      z_flag(result == 0);
+      n_flag(result & (static_cast<std::uint64_t>(1) << 63));
+    }
+  }
+
   constexpr static auto n_bit = 0b1000'0000'0000'0000'0000'0000'0000'0000;
   constexpr static auto z_bit = 0b0100'0000'0000'0000'0000'0000'0000'0000;
   constexpr static auto c_bit = 0b0010'0000'0000'0000'0000'0000'0000'0000;
@@ -566,7 +597,7 @@ template<std::size_t RAMSize = 1024> struct System
       case Instruction_Type::MSR: assert(!"MSR Not Implemented"); break;
       case Instruction_Type::MSRF: assert(!"MSR flags Not Implemented"); break;
       case Instruction_Type::Multiply: assert(!"Multiply Not Implemented"); break;
-      case Instruction_Type::Multiply_Long: assert(!"Multiply_Long Not Implemented"); /* multiply_long(instruction); */ break;
+      case Instruction_Type::Multiply_Long: multiply_long(instruction); break;
       case Instruction_Type::Single_Data_Swap: assert(!"Single_Data_Swap Not Implemented"); break;
       case Instruction_Type::Single_Data_Transfer: single_data_transfer(instruction); break;
       case Instruction_Type::Undefined: assert(!"Undefined Opcode"); break;
@@ -705,12 +736,16 @@ void test_looping()
   34:	cccccccd 	.word	0xcccccccd
   */
 
-  constexpr auto system = run_code(0,
+  auto system = run_code(0,
     0x2c, 0x10, 0x9f, 0xe5, 0x00, 0x00, 0xa0, 0xe3, 0x90, 0x21, 0x83, 0xe0, 0x23, 0x21, 0xa0, 0xe1, 0x02, 0x21, 0x82, 0xe0, 0x00, 0x20, 0x62, 0xe2, 0x02, 0x20, 0x80, 0xe0, 0x64, 0x20, 0xc0, 0xe5, 0x01, 0x00, 0x80, 0xe2, 0x64, 0x00, 0x50, 0xe3, 0xf6, 0xff, 0xff, 0x1a, 0x00, 0x00, 0xa0, 0xe3, 0x0e, 0xf0, 0xa0, 0xe1, 0xcd, 0xcc, 0xcc, 0xcc);
-  static_assert(system.RAM[100] == 5);
-  static_assert(system.RAM[104] == 5);
-  static_assert(system.RAM[105] == 0);
-  static_assert(system.RAM[106] == 1);
+
+  std::cout << std::hex << static_cast<unsigned int>(system.RAM[0x34]) << '\n';
+
+  std::cout << static_cast<int>(system.RAM[100]) << '\n';
+//  static_assert(system.RAM[100] == 0);
+//  static_assert(system.RAM[104] == 5);
+//  static_assert(system.RAM[105] == 0);
+//  static_assert(system.RAM[106] == 1);
 }
 
 
