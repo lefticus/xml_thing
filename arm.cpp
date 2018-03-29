@@ -107,9 +107,9 @@ struct Multiply_Long : Strongly_Typed<std::uint32_t, Multiply_Long>
     : Strongly_Typed{ ins.m_val } {}
 
 
-  [[nodiscard]] constexpr bool unsigned_mul() const noexcept { return !bit_set(22); }
-  [[nodiscard]] constexpr bool accumulate() const noexcept { return !bit_set(21); }
-  [[nodiscard]] constexpr bool status_register_update() const noexcept { return !bit_set(20); }
+  [[nodiscard]] constexpr bool unsigned_mul() const noexcept { return bit_set(22); }
+  [[nodiscard]] constexpr bool accumulate() const noexcept { return bit_set(21); }
+  [[nodiscard]] constexpr bool status_register_update() const noexcept { return bit_set(20); }
   [[nodiscard]] constexpr auto high_result() const noexcept { return (m_val >> 16) & 0b1111; }
   [[nodiscard]] constexpr auto low_result() const noexcept { return (m_val >> 12) & 0b1111; }
   [[nodiscard]] constexpr auto operand_1() const noexcept { return (m_val >> 8) & 0b1111; }
@@ -282,11 +282,18 @@ template<std::size_t RAMSize = 1024> struct System
 
     PC() = loc;
     while (PC() < RAMSize) {
-      std::cout << std::hex << PC() << ':';
-      for (const auto r : registers) {
-        std::cout << ' ' << r;
-      }
-      std::cout << '\n';
+//      std::cout << std::hex << PC() << ':';
+//      for (const auto r : registers) {
+//        std::cout << ' ' << r;
+//      }
+
+//      std::cout << "; ";
+
+//      for (int i = 100; i < 110; ++i) {
+//        std::cout << ' ' << static_cast<std::uint16_t>(RAM[i]);
+//      }
+
+//      std::cout << '\n';
 
       process(get_instruction(PC()));
     }
@@ -468,7 +475,7 @@ template<std::size_t RAMSize = 1024> struct System
   {
     if (instruction.bit_set(24)) {
       // Link bit set
-      registers[14] = PC();
+      registers[14] = PC()-4;
     }
 
     const auto offset = [](const auto &op) -> std::int32_t {
@@ -488,18 +495,18 @@ template<std::size_t RAMSize = 1024> struct System
   {
     const auto result = [val, lhs = registers[val.operand_1()], rhs = registers[val.operand_2()]]() -> std::uint64_t {
       if (val.unsigned_mul()) {
-        return static_cast<std::uint64_t>(lhs) * static_cast<std::uint64_t>(lhs);
+        return static_cast<std::uint64_t>(lhs) * static_cast<std::uint64_t>(rhs);
       } else {
-        return static_cast<std::uint64_t>(static_cast<std::int64_t>(lhs) * static_cast<std::int64_t>(lhs));
+        return static_cast<std::uint64_t>(static_cast<std::int64_t>(lhs) * static_cast<std::int64_t>(rhs));
       }
     }(); 
 
     if (val.accumulate()) {
       registers[val.high_result()] += (result >> 32) & 0xFFFFFFFF;
-      registers[val.low_result()] += 0xFFFFFFFF;
+      registers[val.low_result()] += result & 0xFFFFFFFF;
     } else {
       registers[val.high_result()] = (result >> 32) & 0xFFFFFFFF;
-      registers[val.low_result()] = 0xFFFFFFFF;
+      registers[val.low_result()] = result & 0xFFFFFFFF;
     }
 
     if (val.status_register_update()) {
@@ -589,7 +596,8 @@ template<std::size_t RAMSize = 1024> struct System
 
   constexpr void process(const Instruction instruction) noexcept
   {
-    PC() += 4;
+    // account for prefetch
+    PC() += 8;
     if (check_condition(instruction)) {
       switch (decode(instruction)) {
       case Instruction_Type::Data_Processing: data_processing(instruction); break;
@@ -609,6 +617,9 @@ template<std::size_t RAMSize = 1024> struct System
       case Instruction_Type::Software_Interrupt: assert(!"Software_Interrupt Not Implemented"); break;
       }
     }
+    // discount prefetch
+    PC() -= 4;
+
   }
 };
 
@@ -684,6 +695,15 @@ void test_memory_writes()
   static_assert(systest6.RAM[100] == 5);
 }
 
+void test_lsr()
+{
+  constexpr auto sys = run_instruction(Instruction{ 0xe3a03005 }, // mov r3, #5
+      Instruction{ 0xe1a02123 } // lsr r2, r3, #2
+      );
+  static_assert(sys.registers[2] == 1);
+  static_assert(sys.registers[3] == 5);
+}
+
 void test_sub_with_shift()
 {
   constexpr auto systest7 = run_instruction(Instruction{ 0xe2800001 },  // add r0, r0, #1
@@ -736,16 +756,16 @@ void test_looping()
   34:	cccccccd 	.word	0xcccccccd
   */
 
-  auto system = run_code(0,
+  constexpr auto system = run_code(0,
     0x2c, 0x10, 0x9f, 0xe5, 0x00, 0x00, 0xa0, 0xe3, 0x90, 0x21, 0x83, 0xe0, 0x23, 0x21, 0xa0, 0xe1, 0x02, 0x21, 0x82, 0xe0, 0x00, 0x20, 0x62, 0xe2, 0x02, 0x20, 0x80, 0xe0, 0x64, 0x20, 0xc0, 0xe5, 0x01, 0x00, 0x80, 0xe2, 0x64, 0x00, 0x50, 0xe3, 0xf6, 0xff, 0xff, 0x1a, 0x00, 0x00, 0xa0, 0xe3, 0x0e, 0xf0, 0xa0, 0xe1, 0xcd, 0xcc, 0xcc, 0xcc);
 
-  std::cout << std::hex << static_cast<unsigned int>(system.RAM[0x34]) << '\n';
+//  std::cout << std::hex << static_cast<unsigned int>(system.RAM[0x34]) << '\n';
 
-  std::cout << static_cast<int>(system.RAM[100]) << '\n';
-//  static_assert(system.RAM[100] == 0);
-//  static_assert(system.RAM[104] == 5);
-//  static_assert(system.RAM[105] == 0);
-//  static_assert(system.RAM[106] == 1);
+//  std::cout << static_cast<int>(system.RAM[100]) << '\n';
+  static_assert(system.RAM[100] == 0);
+  static_assert(system.RAM[104] == 4);
+  static_assert(system.RAM[105] == 0);
+  static_assert(system.RAM[106] == 1);
 }
 
 
