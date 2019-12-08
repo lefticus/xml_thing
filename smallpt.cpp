@@ -58,7 +58,8 @@ Sphere spheres[] = {
            DIFF) // Lite
 };
 inline double clamp(double x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
-inline int toInt(double x) { return int(pow(clamp(x), 1 / 2.2) * 255 + .5); }
+//inline int toInt(double x) { return int(pow(clamp(x), 1 / 2.2) * 255 + .5); }
+inline int toInt(double x) { return int(std::lerp(0.0, 255.0, x); }
 inline bool intersect(const Ray &r, double &t, int &id) {
   double n = sizeof(spheres) / sizeof(Sphere), d, inf = t = 1e20;
   for (int i = int(n); i--;)
