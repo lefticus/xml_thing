@@ -6,6 +6,7 @@
 #include <future>
 #include <complex>
 #include <cassert>
+#include <execution>
 
 constexpr std::size_t max_max_iterations      = 2000;
 constexpr std::size_t max_iteration_increment = 200;
@@ -32,14 +33,15 @@ struct Settings
 
 struct Size
 {
-  std::size_t width{};
-  std::size_t height{};
+  unsigned int width{};
+  unsigned int height{};
 };
 
 struct SizeIterator
 {
   Size size;
   std::pair<std::size_t, std::size_t> loc{ 0, 0 };
+
 
   constexpr SizeIterator &operator++() noexcept
   {
@@ -50,6 +52,14 @@ struct SizeIterator
     }
     return *this;
   }
+
+  constexpr SizeIterator operator++(int) noexcept
+  {
+    const auto prev = *this;
+    ++(*this);
+    return prev;
+  }
+
 
   [[nodiscard]] constexpr bool operator!=(const SizeIterator &other) const noexcept { return loc != other.loc; }
 
@@ -164,34 +174,54 @@ template<typename PointType, typename ColorType> void set_pixel(sf::Image &img, 
   img.setPixel(t_point.x, t_point.y, to_sf_color(t_color));
 }
 
-template<Size size>
-struct Image{
-  std::array<std::array<Color<double>, size.height>, size.width> colors;
+template<std::size_t Width, std::size_t Height> struct Image
+{
+  std::array<Color<double>, Width * Height> colors;
+
+  const auto &operator[](const std::pair<std::size_t, std::size_t> &loc) const { return colors[loc.second * Width + loc.first]; }
+  auto &operator[](const std::pair<std::size_t, std::size_t> &loc) { return colors[loc.second * Width + loc.first]; }
+  //  auto &operator
 };
 
-template<Size size>
-void run(std::atomic<Image<size>> *img, const std::atomic<Settings> *global_settings)
+template<std::size_t Width, std::size_t Height> constexpr auto get_indicies()
 {
-  auto localImg = img->load();
-  auto settings = global_settings->load();
+  std::array<std::pair<std::size_t, std::size_t>, Width * Height> indicies{};
+  std::generate(begin(indicies), end(indicies), [index = begin(Size{ Width, Height })]() mutable { return *(index++); });
+  return indicies;
+}
+
+template<std::size_t Width, std::size_t Height> void run(Image<Width, Height> *img, const Settings *global_settings)
+{
+  auto localImg              = std::make_unique<Image<Width, Height>>(*img);
+  auto settings              = *global_settings;
+  static constexpr auto indicies = get_indicies<Width, Height>();
 
   while (!settings.canceling) {
-    for (const auto &location : size) {
-      localImg.colors[location.first][location.second] =
-          get_color(Point{location.first, location.second}, settings.center, size, settings.scale, settings.cur_max_iterations, settings.power, settings.do_abs);
-    }
+    constexpr Size size{ Width, Height };
+    transform(std::execution::par_unseq, begin(indicies), end(indicies), begin(localImg->colors), [=](const auto &location) {
+      return get_color(Point{ location.first, location.second },
+                       settings.center,
+                       size,
+                       settings.scale,
+                       settings.cur_max_iterations,
+                       settings.power,
+                       settings.do_abs);
+    });
 
     settings = *global_settings;
-    *img = localImg;
+    *img     = *localImg;
   }
 }
 
+constexpr static Size size{ 640u, 640u };
+
+
 int main()
 {
-  constexpr static Size size{ 640u, 640u };
-
   sf::RenderWindow window(sf::VideoMode(640u, 640u), "Tilemap");
   window.setVerticalSyncEnabled(true);
+  window.display();
+
 
   sf::Image img;
   img.create(size.width, size.height);
@@ -199,22 +229,21 @@ int main()
   sf::Sprite bufferSprite(texture);
   texture.loadFromImage(img);
 
+
   bufferSprite.setTexture(texture);
   bufferSprite.setTextureRect(sf::IntRect(0, 0, size.width, size.height));
   bufferSprite.setPosition(0, 0);
 
-  std::atomic<Settings> settings;
 
-  std::atomic<Image<size>> img_colors;
+  Settings settings{};
 
-  //void (*f)(std::atomic<Image<size>> *, const std::atomic<Settings> *) = &run<size>;
-  //std::thread worker( f, &img_colors, &settings );
+  auto img_colors = std::make_unique<Image<640u, 640u>>();
+
+  std::thread worker(run<640u, 640u>, img_colors.get(), &settings);
 
   while (window.isOpen()) {
-    const auto img_copy = img_colors.load();
-    for (const auto &loc : size) {
-      set_pixel(img, Point{loc.first, loc.second}, img_copy.colors[loc.first][loc.second]);
-    }
+    const auto img_copy = std::make_unique<Image<640u, 640u>>(*img_colors);
+    for (const auto &loc : size) { set_pixel(img, Point{ loc.first, loc.second }, (*img_copy)[loc]); }
 
     texture.loadFromImage(img);
 
@@ -222,7 +251,6 @@ int main()
     window.display();
 
     settings = [settings = Settings(settings)]() mutable {
-      bool changed = false;
       if (sf::Keyboard::isKeyPressed(sf::Keyboard::PageUp)) { settings.scale *= 0.9; }
       if (sf::Keyboard::isKeyPressed(sf::Keyboard::PageDown)) { settings.scale *= 1.1; }
       auto move_offset = settings.scale / 640;
@@ -245,8 +273,8 @@ int main()
     }();
   }
 
-  Settings canceling = settings;
+  Settings canceling  = settings;
   canceling.canceling = true;
-  settings = canceling;
-  //worker.join();
+  settings            = canceling;
+  worker.join();
 }
