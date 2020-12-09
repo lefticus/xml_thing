@@ -1,6 +1,9 @@
 #ifndef CONSTEXPR_RANDOM_HPP
 #define CONSTEXPR_RANDOM_HPP
 
+#include <limits>
+#include <cstdint>
+
 constexpr auto seed() noexcept {
   std::uint64_t shifted = 0;
 
@@ -30,7 +33,7 @@ struct PCG {
 
   static result_type constexpr max() noexcept
   {
-    return std::numeric_limits<result_type>::min();
+    return std::numeric_limits<result_type>::max();
   }
 
   private:
